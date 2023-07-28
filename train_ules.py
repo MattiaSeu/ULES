@@ -37,6 +37,9 @@ def main(config, weights, checkpoint, reduced_data):
     cfg = yaml.safe_load(open(config))
     torch.manual_seed(cfg['experiment']['seed'])
 
+    # reduced_data = True
+    # weights = 'checkpoints/vicreg_city_updated.ckpt'
+
     # Load data and model
     data = StatDataModule(cfg, reduced_data)
 

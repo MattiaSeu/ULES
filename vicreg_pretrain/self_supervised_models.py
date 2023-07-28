@@ -213,7 +213,7 @@ class SelfSupervisedMethod(pl.LightningModule):
             q = torch.nn.functional.normalize(q, dim=1)
             k = torch.nn.functional.normalize(k, dim=1)
 
-        return emb_q, q, k
+        return emb_q, emb_k, q, k
 
     def _get_contrastive_predictions(self, q, k):
         if self.hparams.use_negative_examples_from_batch:
@@ -322,19 +322,73 @@ class SelfSupervisedMethod(pl.LightningModule):
             "loss_covariance": weighted_cov,
         }
 
+    def _get_vicreg_mod_loss(self, q, k, onehot_masks):
+
+        # initialize the losses
+        pos_loss = 0.0
+        neg_loss = 0.0
+        var_loss = 0.0
+        cos_sim = torch.nn.CosineSimilarity()
+
+        # iterate through the batch
+        for batch_idx in range(q.shape[0]):
+            mask_n = len(onehot_masks[batch_idx])  # store the number of masks for the current image
+            q_i = q[batch_idx]
+            k_i = k[batch_idx]
+            for mask_idx in range(mask_n): # iterate through the mask
+                mask = torch.from_numpy(onehot_masks[batch_idx][mask_idx]).to(torch.device('cuda:0')) # load to device
+                # store a mask for the negative loss, if it's last index get the previous instead of the next one
+                if mask_idx != mask_n:
+                    mask_contr = torch.from_numpy(onehot_masks[batch_idx][mask_idx + 1]).to(torch.device('cuda:0'))
+                else:
+                    mask_contr = torch.from_numpy(onehot_masks[batch_idx][mask_idx - 1]).to(
+                        torch.device('cuda:0'))
+
+                pos_loss += ((q_i * mask).mean()
+                             - (k_i * mask).mean())
+
+                neg_loss += cos_sim((q_i * mask).mean(), (q_i * mask_contr).mean())
+
+                var_loss += (q_i * mask).std()
+
+        loss = pos_loss + neg_loss + var_loss
+        return {
+            "loss": loss,
+            "pos_loss": pos_loss,
+            "neg_loss": neg_loss,
+            "var_loss": var_loss,
+        }
+
+    def segment_to_onehot(self, superpix_seg):
+        one_hot_masks = []
+        for batch_idx in range(superpix_seg.shape[0]):
+            mask_list = []
+            superpix_seg_single = superpix_seg[batch_idx].cpu()
+            mask_values = np.unique(superpix_seg_single)
+
+            for label in mask_values[0:]:
+                mask = np.zeros_like(superpix_seg_single, dtype=np.uint8)
+                mask[superpix_seg_single == label] = 1
+                mask_list.append(mask)
+            one_hot_masks.append(mask_list)
+
+        return one_hot_masks
+
     def forward(self, x):
         return self.model(x)
 
     def training_step(self, batch, batch_idx, optimizer_idx=None):
         all_params = list(self.model.parameters())
-        x, class_labels = batch  # batch is a tuple, we just want the image
+        x, superpix_x = batch  # batch is a tuple, we just want the image
 
-        emb_q, q, k = self._get_embeddings(x)
-        # pos_ip, neg_ip = self._get_pos_neg_ip(emb_q, k)
+        emb_q, emb_k, q, k = self._get_embeddings(x)
+
+        onehot_masks = self.segment_to_onehot(superpix_x)
 
         logits, labels = self._get_contrastive_predictions(q, k)
         if self.hparams.use_vicreg_loss:
-            losses = self._get_vicreg_loss(q, k, batch_idx)
+            # losses = self._get_vicreg_loss(q, k, batch_idx)
+            losses = self._get_vicreg_mod_loss(q, k, onehot_masks)
             contrastive_loss = losses["loss"]
         else:
             losses = {}
