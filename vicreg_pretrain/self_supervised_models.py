@@ -9,6 +9,7 @@ import attr
 import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
+import torchvision.transforms.functional
 from pytorch_lightning.utilities import AttributeDict
 from torch.utils.data import DataLoader
 from torchvision import transforms
@@ -22,6 +23,7 @@ import numpy as np
 
 import os
 from data_loading import CityData, CityDataContrastive
+from utils.tenprint import print_tensor
 from collections import OrderedDict
 
 
@@ -100,15 +102,15 @@ class SelfSupervisedMethod(pl.LightningModule):
             self.dataset_name = None
         else:
             self.dataset_name = hparams.dataset_name
-            city_data_path = os.path.join("~/data", 'cityscapes/')
+            city_data_path = os.path.join("~/data", 'cityscapes_segments/')
             if hparams.extra:
                 self.train_class = CityDataContrastive(city_data_path, split='train_extra', mode='coarse',
-                                                   target_type='semantic', transforms=None)
+                                                       target_type='color', transforms=None)
             else:
                 self.train_class = CityDataContrastive(city_data_path, split='train', mode='fine',
                                                        target_type='semantic', transforms=None)
             self.val_class = CityDataContrastive(city_data_path, split='val', mode='coarse',
-                                                 target_type='semantic', transforms=None)
+                                                 target_type='color', transforms=None)
 
         if hparams.use_lagging_model:
             # "key" function (no grad)
@@ -322,36 +324,33 @@ class SelfSupervisedMethod(pl.LightningModule):
             "loss_covariance": weighted_cov,
         }
 
-    def _get_vicreg_mod_loss(self, q, k, onehot_masks):
+    def _get_vicreg_mod_loss(self, q, k, onehot_masks, onehot_masks_t, flip_flag, crop_pos):
 
         # initialize the losses
         pos_loss = 0.0
         neg_loss = 0.0
         var_loss = 0.0
-        cos_sim = torch.nn.CosineSimilarity()
+        cos_sim = torch.nn.CosineSimilarity(dim=0)
 
         # iterate through the batch
         for batch_idx in range(q.shape[0]):
-            mask_n = len(onehot_masks[batch_idx])  # store the number of masks for the current image
-            q_i = q[batch_idx]
+            mask_n = len(onehot_masks[batch_idx])# store the number of masks for the current image
+            if flip_flag[batch_idx]:
+                q_i = torchvision.transforms.functional.hflip(q[batch_idx])
+            else:
+                q_i = q[batch_idx]
             k_i = k[batch_idx]
-            for mask_idx in range(mask_n): # iterate through the mask
-                mask = torch.from_numpy(onehot_masks[batch_idx][mask_idx]).to(torch.device('cuda:0')) # load to device
-                # store a mask for the negative loss, if it's last index get the previous instead of the next one
-                if mask_idx != mask_n:
-                    mask_contr = torch.from_numpy(onehot_masks[batch_idx][mask_idx + 1]).to(torch.device('cuda:0'))
-                else:
-                    mask_contr = torch.from_numpy(onehot_masks[batch_idx][mask_idx - 1]).to(
-                        torch.device('cuda:0'))
+            for mask_idx in range(mask_n):  # iterate through the mask
+                mask = onehot_masks[batch_idx][mask_idx]  # load to device
 
-                pos_loss += ((q_i * mask).mean()
-                             - (k_i * mask).mean())
+                pos_loss += torch.abs(((q_i * mask).mean((1, 2)))
+                                      - (k_i * mask).mean((1, 2))).sum()
 
-                neg_loss += cos_sim((q_i * mask).mean(), (q_i * mask_contr).mean())
+                neg_loss += cos_sim((q_i * mask).mean((1, 2)), (q_i * torch.logical_not(mask)).mean((1, 2)))
 
                 var_loss += (q_i * mask).std()
 
-        loss = pos_loss + neg_loss + var_loss
+        loss = (100 * pos_loss) + neg_loss + var_loss
         return {
             "loss": loss,
             "pos_loss": pos_loss,
@@ -361,13 +360,12 @@ class SelfSupervisedMethod(pl.LightningModule):
 
     def segment_to_onehot(self, superpix_seg):
         one_hot_masks = []
-        for batch_idx in range(superpix_seg.shape[0]):
+        for superpix_seg_single in superpix_seg:
+            mask_values = superpix_seg_single.unique()
             mask_list = []
-            superpix_seg_single = superpix_seg[batch_idx].cpu()
-            mask_values = np.unique(superpix_seg_single)
 
-            for label in mask_values[0:]:
-                mask = np.zeros_like(superpix_seg_single, dtype=np.uint8)
+            for label in mask_values:
+                mask = torch.zeros_like(superpix_seg_single)
                 mask[superpix_seg_single == label] = 1
                 mask_list.append(mask)
             one_hot_masks.append(mask_list)
@@ -378,17 +376,22 @@ class SelfSupervisedMethod(pl.LightningModule):
         return self.model(x)
 
     def training_step(self, batch, batch_idx, optimizer_idx=None):
-        all_params = list(self.model.parameters())
-        x, superpix_x = batch  # batch is a tuple, we just want the image
+
+        x = [batch['image'], batch['img_contrastive']]
+        superpix_x = batch['target']
+        superpix_t = batch['target_t']
+        flip_flag = batch['flip_flag']
+        crop_pos = batch['crop_pos'] # batch is a tuple, we just want the image
 
         emb_q, emb_k, q, k = self._get_embeddings(x)
 
         onehot_masks = self.segment_to_onehot(superpix_x)
+        onehot_masks_t = self.segment_to_onehot(superpix_t)
 
         logits, labels = self._get_contrastive_predictions(q, k)
         if self.hparams.use_vicreg_loss:
             # losses = self._get_vicreg_loss(q, k, batch_idx)
-            losses = self._get_vicreg_mod_loss(q, k, onehot_masks)
+            losses = self._get_vicreg_mod_loss(q, k, onehot_masks, onehot_masks_t, flip_flag, crop_pos)
             contrastive_loss = losses["loss"]
         else:
             losses = {}
@@ -431,14 +434,19 @@ class SelfSupervisedMethod(pl.LightningModule):
         return {"loss": contrastive_loss}
 
     def validation_step(self, batch, batch_idx):
-        x, class_labels = batch
+        pass
+        x = [batch['image'], batch['img_contrastive']]
+        superpix_x = batch['target']
+        flip_flag = batch['flip_flag']
+        crop_pos = batch['crop_pos']  # batch is a tuple, we just want the image
+
         with torch.no_grad():
             # emb = self.model(x['out'] if isinstance(x, OrderedDict) else x)
             emb = self.model(x[0])
-        return {"emb": emb, "labels": class_labels}
+        return {"emb": emb, 'superpix': superpix_x}
 
     def validation_epoch_end(self, outputs):
-        print('validation time')
+        print('validation time (?)')
 
     def configure_optimizers(self):
         # exclude bias and batch norm from LARS and weight decay
