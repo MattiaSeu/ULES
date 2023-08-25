@@ -5,6 +5,8 @@ from functools import partial
 from typing import Optional
 from typing import Union
 
+import ipdb
+
 import attr
 import pytorch_lightning as pl
 import torch
@@ -324,16 +326,19 @@ class SelfSupervisedMethod(pl.LightningModule):
             "loss_covariance": weighted_cov,
         }
 
-    def _get_vicreg_mod_loss(self, q, k, onehot_masks, onehot_masks_t, flip_flag, crop_pos):
+    def _get_custom_loss(self,q, k, superpix_x, superpix_t, flip_flag, crop_pos):
 
         # initialize the losses
         pos_loss = 0.0
         neg_loss = 0.0
         var_loss = 0.0
         cos_sim = torch.nn.CosineSimilarity(dim=0)
+        
+        onehot_masks, mask_values_list = self.segment_to_onehot(superpix_x)
 
         # iterate through the batch
         for batch_idx in range(q.shape[0]):
+            mask_values = mask_values_list[batch_idx] #store mask values for current image
             mask_n = len(onehot_masks[batch_idx])# store the number of masks for the current image
             if flip_flag[batch_idx]:
                 q_i = torchvision.transforms.functional.hflip(q[batch_idx])
@@ -341,16 +346,19 @@ class SelfSupervisedMethod(pl.LightningModule):
                 q_i = q[batch_idx]
             k_i = k[batch_idx]
             for mask_idx in range(mask_n):  # iterate through the mask
-                mask = onehot_masks[batch_idx][mask_idx]  # load to device
-
-                pos_loss += torch.abs(((q_i * mask).mean((1, 2)))
-                                      - (k_i * mask).mean((1, 2))).sum()
+                mask = onehot_masks[batch_idx][mask_idx]
+                mask_k = (superpix_t[batch_idx] == mask_values[mask_idx])
+                if mask_k.sum() != 0:  # check if the mask actually has correspondence
+                
+                    pos_loss += torch.abs(((q_i * mask).mean((1, 2)))
+                                        - (k_i * mask_k).mean((1, 2))).sum()
+                    
 
                 neg_loss += cos_sim((q_i * mask).mean((1, 2)), (q_i * torch.logical_not(mask)).mean((1, 2)))
 
                 var_loss += (q_i * mask).std()
 
-        loss = (100 * pos_loss) + neg_loss + var_loss
+        loss = pos_loss + neg_loss + var_loss
         return {
             "loss": loss,
             "pos_loss": pos_loss,
@@ -360,17 +368,20 @@ class SelfSupervisedMethod(pl.LightningModule):
 
     def segment_to_onehot(self, superpix_seg):
         one_hot_masks = []
+        mask_values_list = []
         for superpix_seg_single in superpix_seg:
-            mask_values = superpix_seg_single.unique()
+            mask_values = superpix_seg_single.unique().tolist()
             mask_list = []
 
             for label in mask_values:
                 mask = torch.zeros_like(superpix_seg_single)
                 mask[superpix_seg_single == label] = 1
                 mask_list.append(mask)
+                
             one_hot_masks.append(mask_list)
+            mask_values_list.append(mask_values)
 
-        return one_hot_masks
+        return one_hot_masks, mask_values_list
 
     def forward(self, x):
         return self.model(x)
@@ -385,13 +396,10 @@ class SelfSupervisedMethod(pl.LightningModule):
 
         emb_q, emb_k, q, k = self._get_embeddings(x)
 
-        onehot_masks = self.segment_to_onehot(superpix_x)
-        onehot_masks_t = self.segment_to_onehot(superpix_t)
-
         logits, labels = self._get_contrastive_predictions(q, k)
         if self.hparams.use_vicreg_loss:
             # losses = self._get_vicreg_loss(q, k, batch_idx)
-            losses = self._get_vicreg_mod_loss(q, k, onehot_masks, onehot_masks_t, flip_flag, crop_pos)
+            losses = self._get_custom_loss(q, k, superpix_x, superpix_t, flip_flag, crop_pos)
             contrastive_loss = losses["loss"]
         else:
             losses = {}
