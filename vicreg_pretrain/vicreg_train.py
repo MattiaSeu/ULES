@@ -13,6 +13,8 @@ hparams = VICRegParams(
     encoder_arch='FCN_resnet50',
     dataset_name="cityscapes",
     batch_size=8,
+    lr=0.001,
+    optimizer_name="adam",
     embedding_dim=2048,  # this number needs to match the network end embedding size (not sure if still true?)
     extra=True,  # when true, uses extended coarse dataset instead of fine
 )
