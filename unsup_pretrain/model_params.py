@@ -77,8 +77,10 @@ class ModelParams:
     num_lat: int = 32
     num_lat_ch: int = mlp_hidden_dim  # channels should be same as mlp_hidden_dim
 
-    # Cityscape coarse parameter
-    extra: bool = False
+    # Cityscape parameters
+    extra: bool = False # to enable usage of coarse dataset
+    data_path: str = "~/data" # dataset root folder path
+
 # Differences between these parameters and those used in the paper (on image net):
 # max_epochs=1000,
 # lr=1.6,

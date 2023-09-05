@@ -105,7 +105,7 @@ class SelfSupervisedMethod(pl.LightningModule):
             self.dataset_name = None
         else:
             self.dataset_name = hparams.dataset_name
-            city_data_path = os.path.join("~/data", 'cityscapes_segments/')
+            city_data_path = os.path.join(hparams.data_path, 'cityscapes_segments/')
             if hparams.extra:
                 self.train_class = CityDataContrastive(city_data_path, split='train_extra', mode='coarse',
                                                        target_type='color', transforms=None)
@@ -380,12 +380,10 @@ class SelfSupervisedMethod(pl.LightningModule):
             "var_loss": var_loss,
         }
 
-    def _get_custom_contrastive_loss(self, q, k, superpix_x, superpix_t, flip_flag, crop_pos):
+    def _get_superpix_contrastive_loss(self, q, k, superpix_x, superpix_t, flip_flag, crop_pos):
 
-        # initialize the losses
+        # initialize loss and masks
         loss = 0.0
-        cos_sim = torch.nn.CosineSimilarity(dim=0)
-
         onehot_masks, mask_values_list = self.segment_to_onehot(superpix_x)
 
         # iterate through the batch
@@ -401,18 +399,25 @@ class SelfSupervisedMethod(pl.LightningModule):
             # q_i = torch.nn.functional.normalize(q_i)
             # k_i = torch.nn.functional.normalize(k_i)
             sim_qk = torch.empty([1])
-            for mask_idx in range(mask_n):  # iterate through the mask
-                mask = onehot_masks[batch_idx][mask_idx]
-                mask_k = (superpix_t[batch_idx] == mask_values[mask_idx])
-                if mask_k.sum() != 0:  # check if the mask actually has correspondence
-                    mean_qi = (q_i * mask).mean((1, 2))
-                    mean_ki = (k_i * mask_k).mean((1, 2))
-                    mean_qi = torch.nn.functional.normalize(mean_qi, dim=-1)
-                    mean_ki = torch.nn.functional.normalize(mean_ki, dim=-1)
-                    sim_qk = (mean_qi @ mean_ki.T) / 0.1
+            meanq_dict = {}
+            meank_dict = {}
+            mask_values = np.unique(superpix_t[batch_idx].cpu().numpy())
+            for mask_idx in mask_values:  # iterate through the mask
+                mask = (superpix_x[batch_idx] == mask_idx)
+                mask_k = (superpix_t[batch_idx] == mask_idx)
 
-                loss += torch.nn.functional.cross_entropy(sim_qk, 20)
+                mean_qi = (q_i * mask).mean((1, 2))
+                mean_ki = (k_i * mask_k).mean((1, 2))
+                mean_qi = torch.nn.functional.normalize(mean_qi, dim=-1)
+                mean_ki = torch.nn.functional.normalize(mean_ki, dim=-1)
+                meanq_dict[mask_idx] = mean_qi
+                meank_dict[mask_idx] = mean_ki
 
+            meanq = torch.stack(tuple(meanq_dict.values()))
+            meank = torch.stack(tuple(meank_dict.values()))
+            sim_qk = (meanq @ meank.T) / 0.1
+            labels = torch.arange(meanq.shape[0])
+            loss += torch.nn.functional.cross_entropy(sim_qk, labels.cuda())
         return {
             "loss": loss,
         }
@@ -448,10 +453,11 @@ class SelfSupervisedMethod(pl.LightningModule):
         emb_q, emb_k, q, k = self._get_embeddings(x)
 
         logits, labels = self._get_contrastive_predictions(q, k)
-        if self.hparams.use_vicreg_loss:
-            # losses = self._get_vicreg_loss(q, k, batch_idx)
-            # losses = self._get_custom_loss(q, k, superpix_x, superpix_t, flip_flag, crop_pos)
-            losses = self._get_custom_contrastive_loss(q, k, superpix_x, superpix_t, flip_flag, crop_pos)
+        if self.hparams.loss_type == "contrastive":
+            losses = self._get_superpix_contrastive_loss(q, k, superpix_x, superpix_t, flip_flag, crop_pos)
+            contrastive_loss = losses["loss"]
+        elif self.hparams.loss_type == "custom":
+            losses = self._get_custom_loss(q, k, superpix_x, superpix_t, flip_flag, crop_pos)
             contrastive_loss = losses["loss"]
         else:
             losses = {}

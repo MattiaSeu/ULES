@@ -37,8 +37,8 @@ def main(config, weights, checkpoint, reduced_data):
     cfg = yaml.safe_load(open(config))
     torch.manual_seed(cfg['experiment']['seed'])
 
-    # reduced_data = True
-    # weights = 'checkpoints/vicreg_city_updated.ckpt'
+    reduced_data = True
+    weights = 'checkpoints/resizedcroplast.ckpt'
 
     # Load data and model
     data = StatDataModule(cfg, reduced_data)
@@ -50,7 +50,6 @@ def main(config, weights, checkpoint, reduced_data):
 
     # Add callbacks:
     # lr_monitor = LearningRateMonitor(logging_interval='step')
-
 
     tb_logger = pl_loggers.TensorBoardLogger('experiments/' + cfg['experiment']['id'],
                                              default_hp_metric=False)

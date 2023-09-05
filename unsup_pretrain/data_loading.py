@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 from PIL import ImageFilter
 from torchvision import transforms
-from transforms_custom import RandomCropWithCoord, RandomFlipWithReturn
+from transforms_custom import RandomCropWithCoord, RandomFlipWithReturn, RandomSizeCropWithCoord
 from VicREGL_transforms import MultiCropTrainDataTransform
 from PIL import ImageOps
 
@@ -128,7 +128,7 @@ class CityDataContrastive(Cityscapes):
             transforms.RandomGrayscale(p=0.2),
             transforms.RandomApply([GaussianBlur([0.1, 2.0])], p=0.5),
             RandomFlipWithReturn(),
-            RandomCropWithCoord([128, 256]),
+            RandomSizeCropWithCoord(),
             transforms.Resize((128, 256), transforms.InterpolationMode.BILINEAR),
             transforms.ToTensor(),
             # transforms.Normalize(mean=(0.28689554, 0.32513303, 0.28389177),
