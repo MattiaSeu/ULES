@@ -153,9 +153,9 @@ class CityDataContrastive(Cityscapes):
                 if flip_flag:
                     target_t = ImageOps.mirror(target)
             else:
-                image_contr, x_crop, y_crop = transform(image_contr)
+                image_contr, x_crop, y_crop, crop_width, crop_height = transform(image_contr)
                 if x_crop != -1:
-                    target_t = target_t.crop([x_crop, y_crop, x_crop+256, y_crop+128])
+                    target_t = target_t.crop([x_crop, y_crop, x_crop+crop_width, y_crop+crop_height])
         target_t = transform_target(target_t)
 
         data_out = {'image': transform_image(image), 'img_contrastive': image_contr,
@@ -216,3 +216,28 @@ class CityData(Cityscapes):
         # tra['mask'] = tra['mask'].permute(1, 2, 0).squeeze()
         return tra['image'], tra['target']
     # torch.unsqueeze(transformed['mask'], 0)
+
+class CityDataPixel(Cityscapes):
+
+    def __getitem__(self, index: int) -> Tuple[Any, Any]:
+        image = Image.open(self.images[index]).convert('RGB')
+
+        targets: Any = []
+        for i, t in enumerate(self.target_type):
+            if t == 'polygon':
+                target = self._load_json(self.targets[index][i])
+            else:
+                target = Image.open(self.targets[index][i])
+            targets.append(target)
+        target = tuple(targets) if len(targets) > 1 else targets[0]
+
+        # transformations to apply
+
+        transform_image = transforms.Compose(
+            [
+                transforms.Resize((128, 256), transforms.InterpolationMode.BILINEAR),
+                transforms.ToTensor()
+            ]
+        )
+
+        return transform_image(image)

@@ -27,7 +27,7 @@ import os
 from data_loading import CityData, CityDataContrastive
 from utils.tenprint import print_tensor
 from collections import OrderedDict
-from torch.nn.functional import normalize
+from matplotlib import pyplot as plt
 
 
 def get_mlp_normalization(hparams: ModelParams, prediction=False):
@@ -123,16 +123,16 @@ class SelfSupervisedMethod(pl.LightningModule):
         else:
             self.lagging_model = None
 
-        # self.projection_model = self_sup_utils.MLP(
-        #     hparams.embedding_dim,
-        #     hparams.dim,
-        #     hparams.mlp_hidden_dim,
-        #     num_layers=hparams.projection_mlp_layers,
-        #     normalization=get_mlp_normalization(hparams),
-        #     weight_standardization=hparams.use_mlp_weight_standardization,
-        # )
+        self.projection_model = self_sup_utils.MLP(
+            hparams.embedding_dim,
+            hparams.dim,
+            hparams.mlp_hidden_dim,
+            num_layers=hparams.projection_mlp_layers,
+            normalization=get_mlp_normalization(hparams),
+            weight_standardization=hparams.use_mlp_weight_standardization,
+        )
 
-        self.projection_model = torch.nn.Identity()
+        # self.projection_model = torch.nn.Identity()
 
         self.prediction_model = self_sup_utils.MLP(
             hparams.dim,
@@ -193,9 +193,18 @@ class SelfSupervisedMethod(pl.LightningModule):
         else:
             emb_q = self.model(im_q)
 
-        q_projection = self.projection_model(
-            emb_q['out'].squeeze(0) if isinstance(emb_q, OrderedDict) else emb_q[..., 0, 0])
+        if isinstance(emb_q, OrderedDict):
+            b, f, h, w = emb_q["out"].shape
+            # transpose to b, w, h, f
+            proj_q_in = emb_q['out'].transpose(1, -1).flatten(0, 2)
+        else:
+            b, f, h, w = emb_q.shape
+            proj_q_in = emb_q.transpose(1, -1).flatten(0, 2)
+
+        q_projection = self.projection_model(proj_q_in)
         q = self.prediction_model(q_projection)  # queries: NxC
+        q = q.reshape(b, w, h, -1).transpose(1, -1)
+
         if self.hparams.use_lagging_model:
             # compute key features
             with torch.no_grad():  # no gradient to keys
@@ -210,9 +219,17 @@ class SelfSupervisedMethod(pl.LightningModule):
             else:
                 emb_k = self.model(im_k)
 
-            k_projection = self.projection_model(
-                emb_k['out'].squeeze(0) if isinstance(emb_k, OrderedDict) else emb_k[..., 0, 0])
+            if isinstance(emb_k, OrderedDict):
+                b, f, h, w = emb_k["out"].shape
+                # transpose to b, w, h, f
+                proj_k_in = emb_k['out'].transpose(1, -1).flatten(0, 2)
+            else:
+                b, f, h, w = emb_k.shape
+                proj_k_in = emb_k.transpose(1, -1).flatten(0, 2)
+            
+            k_projection = self.projection_model(proj_k_in)
             k = self.prediction_model(k_projection)  # queries: NxC
+            k = k.reshape(b, w, h, -1).transpose(1, -1)
 
         if self.hparams.use_unit_sphere_projection:
             q = torch.nn.functional.normalize(q, dim=1)
@@ -230,9 +247,9 @@ class SelfSupervisedMethod(pl.LightningModule):
         # Einstein sum is more intuitive
         # positive logits: Nx1
         q = q.permute(0, 2, 3, 1)
-        q = q.reshape(-1, 20)
+        q = q.reshape(-1, q.shape[-1])
         k = k.permute(0, 2, 3, 1)
-        k = k.reshape(-1, 20)
+        k = k.reshape(-1, k.shape[-1])
         l_pos = torch.einsum("nc,nc->n", [q, k]).unsqueeze(-1)
 
         if self.hparams.use_negative_examples_from_queue:
@@ -497,6 +514,32 @@ class SelfSupervisedMethod(pl.LightningModule):
             self._dequeue_and_enqueue(k)
 
         self.log_dict(log_data)
+
+        if batch_idx % 20:  # Log images every 20 batches
+            for img_idx, img_tuple in enumerate(zip(x[0], x[1], superpix_x, superpix_t)):
+                # store images in variables
+                input_img = img_tuple[0].detach().cpu()
+                input_contr = img_tuple[1].detach().cpu()
+                spix = img_tuple[2].detach().cpu()
+                spix_t = img_tuple[3].detach().cpu()
+                # put them in a plot, so they are all printed together
+                fig, ax = plt.subplots(ncols=4)  # , gridspec_kw={'height_ratios': [1, 1, 1]})
+                ax[0].imshow(np.moveaxis(input_img.numpy(), 0, 2))
+                ax[1].imshow(np.moveaxis(input_contr.numpy(), 0, 2))  # (256, 512, 3)
+                ax[2].imshow(spix.numpy())   # (256, 512, 3)
+                ax[3].imshow(spix_t.numpy())   # (256, 512, 3)
+                ax[0].axis('off')
+                ax[1].axis('off')
+                ax[2].axis('off')
+                ax[3].axis('off')
+                ax[0].set_title('Input Image')
+                ax[1].set_title('View')
+                ax[2].set_title('Superpix input')
+                ax[3].set_title('Superpix view')
+                plt.tight_layout()
+                plt.margins(x=0)
+                plt.margins(y=0)
+                self.logger.experiment.add_figure(f"Results/{batch_idx}_{img_idx}", fig)
         return {"loss": contrastive_loss}
 
     def validation_step(self, batch, batch_idx):
@@ -550,7 +593,7 @@ class SelfSupervisedMethod(pl.LightningModule):
                 self.hparams.max_epochs,
                 eta_min=self.hparams.final_lr_schedule_value,
             )
-            return [optimizer], [self.lr_scheduler]
+            return [optimizer] #, [self.lr_scheduler]
         else:
             raise NotImplementedError(f"No such optimizer {self.hparams.optimizer_name}")
 

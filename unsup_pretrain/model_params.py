@@ -80,6 +80,7 @@ class ModelParams:
     # Cityscape parameters
     extra: bool = False # to enable usage of coarse dataset
     data_path: str = "~/data" # dataset root folder path
+    image_log: bool = False
 
 # Differences between these parameters and those used in the paper (on image net):
 # max_epochs=1000,

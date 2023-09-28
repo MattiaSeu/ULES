@@ -37,8 +37,8 @@ def main(config, weights, checkpoint, reduced_data):
     cfg = yaml.safe_load(open(config))
     torch.manual_seed(cfg['experiment']['seed'])
 
-    reduced_data = True
-    weights = 'checkpoints/resizedcroplast.ckpt'
+    # reduced_data = True
+    # weights = 'checkpoints/lastfixed.ckpt'
 
     # Load data and model
     data = StatDataModule(cfg, reduced_data)
@@ -46,7 +46,16 @@ def main(config, weights, checkpoint, reduced_data):
     if weights is None:
         model = ULES(cfg)
     else:  # this works only if we pre-train the whole network (encoder + decoder)
-        model = ULES.load_from_checkpoint(weights, cfg=cfg, strict=False)
+        # model = ULES.load_from_checkpoint(weights, cfg=cfg, strict=False)
+        model = ULES(cfg)
+        checkpoint = torch.load(weights)
+        state_dict = checkpoint["state_dict"]
+        for k in list(state_dict.keys()):
+            if not k.startswith("model.backbone"):
+                del state_dict[k]
+        model.load_state_dict(state_dict, strict=False)
+        # chkpoint = torch.load(weights)
+        # ULES.model.load_from_state_dict(chkpoint['model_state_dict'])
 
     # Add callbacks:
     # lr_monitor = LearningRateMonitor(logging_interval='step')
@@ -60,7 +69,7 @@ def main(config, weights, checkpoint, reduced_data):
     trainer = Trainer(gpus=cfg['train']['n_gpus'],
                       logger=tb_logger,
                       log_every_n_steps=10,
-                      resume_from_checkpoint=checkpoint,
+                      # resume_from_checkpoint=checkpoint,
                       max_epochs=cfg['train']['max_epoch'],
                       callbacks=[checkpoint_callback],
                       accumulate_grad_batches=4)

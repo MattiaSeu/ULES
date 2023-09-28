@@ -48,5 +48,5 @@ class RandomSizeCropWithCoord:
             y = random.randint(0, max_y)
 
             cropped_img = img.crop((x, y, x + crop_width, y + crop_height))
-            return cropped_img, x, y
-        return img, -1, -1  # not to mix up with when the random crop starts from [0, 0]
+            return cropped_img, x, y, crop_width, crop_height
+        return img, -1, -1, -1, -1  # not to mix up with when the random crop starts from [0, 0]
