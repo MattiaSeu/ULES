@@ -37,8 +37,8 @@ def main(config, weights, checkpoint, reduced_data):
     cfg = yaml.safe_load(open(config))
     torch.manual_seed(cfg['experiment']['seed'])
 
-    # reduced_data = True
-    # weights = 'checkpoints/lastfixed.ckpt'
+    reduced_data = True
+    weights = 'checkpoints/lastfixed.ckpt'
 
     # Load data and model
     data = StatDataModule(cfg, reduced_data)
@@ -68,8 +68,9 @@ def main(config, weights, checkpoint, reduced_data):
 
     trainer = Trainer(gpus=cfg['train']['n_gpus'],
                       logger=tb_logger,
-                      log_every_n_steps=10,
+                      # log_every_n_steps=10,
                       # resume_from_checkpoint=checkpoint,
+                      limit_val_batches=0.05,
                       max_epochs=cfg['train']['max_epoch'],
                       callbacks=[checkpoint_callback],
                       accumulate_grad_batches=4)

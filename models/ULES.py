@@ -166,7 +166,7 @@ class Ules(LightningModule):
         # self.scheduler_encoder = torch.optim.lr_scheduler.StepLR(
         #     self.encoder_optimizer, step_size=25, gamma=0.9)
         self.optimizers = torch.optim.AdamW(
-            self.model.parameters(), lr=self.lr[0])
+            self.model.classifier.parameters(), lr=self.lr[0])
 
         # return [self.encoder_optimizer, self.semantic_optimizer], [self.scheduler_encoder]
         return [self.optimizers]
