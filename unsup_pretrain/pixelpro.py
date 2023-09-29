@@ -21,6 +21,7 @@ class LightningPixelCL(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         inputs = batch
         outputs = self(inputs)
+        self.log_dict(outputs)
         return outputs  # The loss is already computed in the forward pass
 
     def configure_optimizers(self):
@@ -47,15 +48,18 @@ class LightningPixelCL(pl.LightningModule):
 @click.option('--batch_size',
               '-b',
               help='batch size',
-              default=16)
+              default=2)
 @click.option('--num_workers',
               '-nw',
-              help='number of workers for data loading (tent-ative equal to cpu cores)',
+              help='number of workers for data loading (tentative equal to cpu cores)',
               default=12)
 def main(data_path, extra, checkpoint, batch_size, num_workers):
     resnet = models.segmentation.fcn_resnet50(pretrained=False, progress=True, num_classes=20,
                                               aux_loss=None)
+    # data_path = "~/data_dummy"
     city_data_path = os.path.join(data_path, 'cityscapes/')
+
+    # extra = False
 
     learner = PixelCL(
         resnet,
@@ -82,7 +86,7 @@ def main(data_path, extra, checkpoint, batch_size, num_workers):
 
     checkpoint_callback = ModelCheckpoint(dirpath="checkpoints", save_top_k=2, monitor="loss", save_last=True,
                                           every_n_epochs=5)
-    trainer = pl.Trainer(accelerator="auto", callbacks=[checkpoint_callback], resume_from_checkpoint=checkpoint)
+    trainer = pl.Trainer(gpus=1, callbacks=[checkpoint_callback], resume_from_checkpoint=checkpoint)
 
     if extra:
         split_train = 'train_extra'
@@ -97,8 +101,8 @@ def main(data_path, extra, checkpoint, batch_size, num_workers):
     batch_size = batch_size
 
     trainer.fit(model,
-                DataLoader(train_data, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True),
-                DataLoader(val_data, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True),
+                DataLoader(train_data, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True, drop_last=True),
+                DataLoader(val_data, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True, drop_last=True),
                 )
 
 

@@ -13,16 +13,20 @@ from kornia import filters, color
 
 from einops import rearrange
 
+
 # helper functions
 
 def identity(t):
     return t
 
+
 def default(val, def_val):
     return def_val if val is None else val
 
+
 def rand_true(prob):
     return random.random() < prob
+
 
 def singleton(cache_key):
     def inner_fn(fn):
@@ -35,17 +39,22 @@ def singleton(cache_key):
             instance = fn(self, *args, **kwargs)
             setattr(self, cache_key, instance)
             return instance
+
         return wrapper
+
     return inner_fn
+
 
 def get_module_device(module):
     return next(module.parameters()).device
+
 
 def set_requires_grad(model, val):
     for p in model.parameters():
         p.requires_grad = val
 
-def cutout_coordinates(image, ratio_range = (0.6, 0.8)):
+
+def cutout_coordinates(image, ratio_range=(0.6, 0.8)):
     _, _, orig_h, orig_w = image.shape
 
     ratio_lo, ratio_hi = ratio_range
@@ -55,12 +64,14 @@ def cutout_coordinates(image, ratio_range = (0.6, 0.8)):
     coor_y = floor((orig_h - h) * random.random())
     return ((coor_y, coor_y + h), (coor_x, coor_x + w)), random_ratio
 
-def cutout_and_resize(image, coordinates, output_size = None, mode = 'nearest'):
+
+def cutout_and_resize(image, coordinates, output_size=None, mode='nearest'):
     shape = image.shape
     output_size = default(output_size, shape[2:])
     (y0, y1), (x0, x1) = coordinates
     cutout_image = image[:, :, y0:y1, x0:x1]
-    return F.interpolate(cutout_image, size = output_size, mode = mode)
+    return F.interpolate(cutout_image, size=output_size, mode=mode)
+
 
 # augmentation utils
 
@@ -69,10 +80,12 @@ class RandomApply(nn.Module):
         super().__init__()
         self.fn = fn
         self.p = p
+
     def forward(self, x):
         if random.random() > self.p:
             return x
         return self.fn(x)
+
 
 # exponential moving average
 
@@ -86,10 +99,12 @@ class EMA():
             return new
         return old * self.beta + (1 - self.beta) * new
 
+
 def update_moving_average(ema_updater, ma_model, current_model):
     for current_params, ma_params in zip(current_model.parameters(), ma_model.parameters()):
         old_weight, up_weight = ma_params.data, current_params.data
         ma_params.data = ema_updater.update_average(old_weight, up_weight)
+
 
 # loss fn
 
@@ -98,10 +113,11 @@ def loss_fn(x, y):
     y = F.normalize(y, dim=-1, p=2)
     return 2 - 2 * (x * y).sum(dim=-1)
 
+
 # classes
 
 class MLP(nn.Module):
-    def __init__(self, chan, chan_out = 256, inner_dim = 2048):
+    def __init__(self, chan, chan_out=256, inner_dim=2048):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(chan, inner_dim),
@@ -113,8 +129,9 @@ class MLP(nn.Module):
     def forward(self, x):
         return self.net(x)
 
+
 class ConvMLP(nn.Module):
-    def __init__(self, chan, chan_out = 256, inner_dim = 2048):
+    def __init__(self, chan, chan_out=256, inner_dim=2048):
         super().__init__()
         self.net = nn.Sequential(
             nn.Conv2d(chan, inner_dim, 1),
@@ -126,13 +143,14 @@ class ConvMLP(nn.Module):
     def forward(self, x):
         return self.net(x)
 
+
 class PPM(nn.Module):
     def __init__(
-        self,
-        *,
-        chan,
-        num_layers = 1,
-        gamma = 2):
+            self,
+            *,
+            chan,
+            num_layers=1,
+            gamma=2):
         super().__init__()
         self.gamma = gamma
 
@@ -153,11 +171,12 @@ class PPM(nn.Module):
     def forward(self, x):
         xi = x[:, :, :, :, None, None]
         xj = x[:, :, None, None, :, :]
-        similarity = F.relu(F.cosine_similarity(xi, xj, dim = 1)) ** self.gamma
+        similarity = F.relu(F.cosine_similarity(xi, xj, dim=1)) ** self.gamma
 
         transform_out = self.transform_net(x)
         out = einsum('b x y h w, b c h w -> b c x y', similarity, transform_out)
         return out
+
 
 # a wrapper class for the base neural network
 # will manage the interception of the hidden layer output
@@ -165,13 +184,13 @@ class PPM(nn.Module):
 
 class NetWrapper(nn.Module):
     def __init__(
-        self,
-        *,
-        net,
-        projection_size,
-        projection_hidden_size,
-        layer_pixel = -2,
-        layer_instance = -2
+            self,
+            *,
+            net,
+            projection_size,
+            projection_hidden_size,
+            layer_pixel=-2,
+            layer_instance=-2
     ):
         super().__init__()
         self.net = net
@@ -250,30 +269,31 @@ class NetWrapper(nn.Module):
         instance_projection = instance_projector(instance_representation)
         return pixel_projection, instance_projection
 
+
 # main class
 
 class PixelCL(nn.Module):
     def __init__(
-        self,
-        net,
-        image_size,
-        hidden_layer_pixel = -2,
-        hidden_layer_instance = -2,
-        projection_size = 256,
-        projection_hidden_size = 2048,
-        augment_fn = None,
-        augment_fn2 = None,
-        prob_rand_hflip = 0.25,
-        moving_average_decay = 0.99,
-        ppm_num_layers = 1,
-        ppm_gamma = 2,
-        distance_thres = 0.7,
-        similarity_temperature = 0.3,
-        alpha = 1.,
-        use_pixpro = True,
-        cutout_ratio_range = (0.6, 0.8),
-        cutout_interpolate_mode = 'nearest',
-        coord_cutout_interpolate_mode = 'bilinear'
+            self,
+            net,
+            image_size,
+            hidden_layer_pixel=-2,
+            hidden_layer_instance=-2,
+            projection_size=256,
+            projection_hidden_size=2048,
+            augment_fn=None,
+            augment_fn2=None,
+            prob_rand_hflip=0.25,
+            moving_average_decay=0.99,
+            ppm_num_layers=1,
+            ppm_gamma=2,
+            distance_thres=0.7,
+            similarity_temperature=0.3,
+            alpha=1.,
+            use_pixpro=True,
+            cutout_ratio_range=(0.6, 0.8),
+            cutout_interpolate_mode='nearest',
+            coord_cutout_interpolate_mode='bilinear'
     ):
         super().__init__()
 
@@ -290,11 +310,11 @@ class PixelCL(nn.Module):
         self.prob_rand_hflip = prob_rand_hflip
 
         self.online_encoder = NetWrapper(
-            net = net,
-            projection_size = projection_size,
-            projection_hidden_size = projection_hidden_size,
-            layer_pixel = hidden_layer_pixel,
-            layer_instance = hidden_layer_instance
+            net=net,
+            projection_size=projection_size,
+            projection_hidden_size=projection_hidden_size,
+            layer_pixel=hidden_layer_pixel,
+            layer_instance=hidden_layer_instance
         )
 
         self.target_encoder = None
@@ -308,9 +328,9 @@ class PixelCL(nn.Module):
 
         if use_pixpro:
             self.propagate_pixels = PPM(
-                chan = projection_size,
-                num_layers = ppm_num_layers,
-                gamma = ppm_gamma
+                chan=projection_size,
+                num_layers=ppm_num_layers,
+                gamma=ppm_gamma
             )
 
         self.cutout_ratio_range = cutout_ratio_range
@@ -341,10 +361,10 @@ class PixelCL(nn.Module):
         assert self.target_encoder is not None, 'target encoder has not been created yet'
         update_moving_average(self.target_ema_updater, self.target_encoder, self.online_encoder)
 
-    def forward(self, x, return_positive_pairs = False):
+    def forward(self, x, return_positive_pairs=False):
         shape, device, prob_flip = x.shape, x.device, self.prob_rand_hflip
 
-        rand_flip_fn = lambda t: torch.flip(t, dims = (-1,))
+        rand_flip_fn = lambda t: torch.flip(t, dims=(-1,))
 
         flip_image_one, flip_image_two = rand_true(prob_flip), rand_true(prob_flip)
         flip_image_one_fn = rand_flip_fn if flip_image_one else identity
@@ -353,8 +373,8 @@ class PixelCL(nn.Module):
         cutout_coordinates_one, _ = cutout_coordinates(x, self.cutout_ratio_range)
         cutout_coordinates_two, _ = cutout_coordinates(x, self.cutout_ratio_range)
 
-        image_one_cutout = cutout_and_resize(x, cutout_coordinates_one, mode = self.cutout_interpolate_mode)
-        image_two_cutout = cutout_and_resize(x, cutout_coordinates_two, mode = self.cutout_interpolate_mode)
+        image_one_cutout = cutout_and_resize(x, cutout_coordinates_one, mode=self.cutout_interpolate_mode)
+        image_two_cutout = cutout_and_resize(x, cutout_coordinates_two, mode=self.cutout_interpolate_mode)
 
         image_one_cutout = flip_image_one_fn(image_one_cutout)
         image_two_cutout = flip_image_two_fn(image_two_cutout)
@@ -370,8 +390,8 @@ class PixelCL(nn.Module):
         proj_image_h, proj_image_w = proj_image_shape
 
         coordinates = torch.meshgrid(
-            torch.arange(image_h, device = device),
-            torch.arange(image_w, device = device)
+            torch.arange(image_h, device=device),
+            torch.arange(image_w, device=device)
         )
 
         coordinates = torch.stack(coordinates).unsqueeze(0).float()
@@ -379,19 +399,24 @@ class PixelCL(nn.Module):
         coordinates[:, 0] *= proj_image_h
         coordinates[:, 1] *= proj_image_w
 
-        proj_coors_one = cutout_and_resize(coordinates, cutout_coordinates_one, output_size = proj_image_shape, mode = self.coord_cutout_interpolate_mode)
-        proj_coors_two = cutout_and_resize(coordinates, cutout_coordinates_two, output_size = proj_image_shape, mode = self.coord_cutout_interpolate_mode)
+        proj_coors_one = cutout_and_resize(coordinates, cutout_coordinates_one, output_size=proj_image_shape,
+                                           mode=self.coord_cutout_interpolate_mode)
+        proj_coors_two = cutout_and_resize(coordinates, cutout_coordinates_two, output_size=proj_image_shape,
+                                           mode=self.coord_cutout_interpolate_mode)
 
         proj_coors_one = flip_image_one_fn(proj_coors_one)
         proj_coors_two = flip_image_two_fn(proj_coors_two)
 
-        proj_coors_one, proj_coors_two = map(lambda t: rearrange(t, 'b c h w -> (b h w) c'), (proj_coors_one, proj_coors_two))
-        pdist = nn.PairwiseDistance(p = 2)
+        proj_coors_one, proj_coors_two = map(lambda t: rearrange(t, 'b c h w -> (b h w) c'),
+                                             (proj_coors_one, proj_coors_two))
+        pdist = nn.PairwiseDistance(p=2)
 
         num_pixels = proj_coors_one.shape[0]
 
-        proj_coors_one_expanded = proj_coors_one[:, None].expand(num_pixels, num_pixels, -1).reshape(num_pixels * num_pixels, 2)
-        proj_coors_two_expanded = proj_coors_two[None, :].expand(num_pixels, num_pixels, -1).reshape(num_pixels * num_pixels, 2)
+        proj_coors_one_expanded = proj_coors_one[:, None].expand(num_pixels, num_pixels, -1).reshape(
+            num_pixels * num_pixels, 2)
+        proj_coors_two_expanded = proj_coors_two[None, :].expand(num_pixels, num_pixels, -1).reshape(
+            num_pixels * num_pixels, 2)
 
         distance_matrix = pdist(proj_coors_one_expanded, proj_coors_two_expanded)
         distance_matrix = distance_matrix.reshape(num_pixels, num_pixels)
@@ -408,7 +433,8 @@ class PixelCL(nn.Module):
 
         flatten = lambda t: rearrange(t, 'b c h w -> b c (h w)')
 
-        target_proj_pixel_one, target_proj_pixel_two = list(map(flatten, (target_proj_pixel_one, target_proj_pixel_two)))
+        target_proj_pixel_one, target_proj_pixel_two = list(
+            map(flatten, (target_proj_pixel_one, target_proj_pixel_two)))
 
         # get total number of positive pixel pairs
 
@@ -433,16 +459,18 @@ class PixelCL(nn.Module):
 
             proj_pixel_one, proj_pixel_two = list(map(flatten, (proj_pixel_one, proj_pixel_two)))
 
-            similarity_one_two = F.cosine_similarity(proj_pixel_one[..., :, None], target_proj_pixel_two[..., None, :], dim = 1) / self.similarity_temperature
-            similarity_two_one = F.cosine_similarity(proj_pixel_two[..., :, None], target_proj_pixel_one[..., None, :], dim = 1) / self.similarity_temperature
+            similarity_one_two = F.cosine_similarity(proj_pixel_one[..., :, None], target_proj_pixel_two[..., None, :],
+                                                     dim=1) / self.similarity_temperature
+            similarity_two_one = F.cosine_similarity(proj_pixel_two[..., :, None], target_proj_pixel_one[..., None, :],
+                                                     dim=1) / self.similarity_temperature
 
             loss_pix_one_two = -torch.log(
-                similarity_one_two.masked_select(positive_mask_one_two[None, ...]).exp().sum() / 
+                similarity_one_two.masked_select(positive_mask_one_two[None, ...]).exp().sum() /
                 similarity_one_two.exp().sum()
             )
 
             loss_pix_two_one = -torch.log(
-                similarity_two_one.masked_select(positive_mask_two_one[None, ...]).exp().sum() / 
+                similarity_two_one.masked_select(positive_mask_two_one[None, ...]).exp().sum() /
                 similarity_two_one.exp().sum()
             )
 
@@ -453,10 +481,13 @@ class PixelCL(nn.Module):
             propagated_pixels_one = self.propagate_pixels(proj_pixel_one)
             propagated_pixels_two = self.propagate_pixels(proj_pixel_two)
 
-            propagated_pixels_one, propagated_pixels_two = list(map(flatten, (propagated_pixels_one, propagated_pixels_two)))
+            propagated_pixels_one, propagated_pixels_two = list(
+                map(flatten, (propagated_pixels_one, propagated_pixels_two)))
 
-            propagated_similarity_one_two = F.cosine_similarity(propagated_pixels_one[..., :, None], target_proj_pixel_two[..., None, :], dim = 1)
-            propagated_similarity_two_one = F.cosine_similarity(propagated_pixels_two[..., :, None], target_proj_pixel_one[..., None, :], dim = 1)
+            propagated_similarity_one_two = F.cosine_similarity(propagated_pixels_one[..., :, None],
+                                                                target_proj_pixel_two[..., None, :], dim=1)
+            propagated_similarity_two_one = F.cosine_similarity(propagated_pixels_two[..., :, None],
+                                                                target_proj_pixel_one[..., None, :], dim=1)
 
             loss_pixpro_one_two = - propagated_similarity_one_two.masked_select(positive_mask_one_two[None, ...]).mean()
             loss_pixpro_two_one = - propagated_similarity_two_one.masked_select(positive_mask_two_one[None, ...]).mean()
@@ -467,5 +498,11 @@ class PixelCL(nn.Module):
 
         loss = pix_loss * self.alpha + instance_loss
 
-        ret = (loss, positive_pixel_pairs) if return_positive_pairs else loss
+        log_data = {
+            "loss": loss,
+            "pixel_loss": pix_loss,
+            "instance_loss": instance_loss,
+        }
+
+        ret = (log_data, positive_pixel_pairs) if return_positive_pairs else log_data
         return ret
