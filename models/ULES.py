@@ -105,28 +105,28 @@ class Ules(LightningModule):
         # we sum all the ious, because in validation_epoch_end we divide by the number of samples = mean over validation set
         self.accumulated_miou += iou
 
-        if self.trainer.current_epoch % 10 and batch_idx % 20:  # Log images every 20 batches
-            for img_idx, img_tuple in enumerate(zip(batch['image'], gt_batch, pred)):
-                # store images in variables
-                input_img = img_tuple[0].detach().cpu()
-                ground_truth = decode_segmap(img_tuple[1].detach().cpu())
-                encoded_pred = torch.argmax(torch.softmax(img_tuple[2], 0), 0)
-                decoded_pred = decode_segmap(encoded_pred.detach().cpu())
-                # put them in a plot, so they are all printed together
-                fig, ax = plt.subplots(ncols=3)  # , gridspec_kw={'height_ratios': [1, 1, 1]})
-                ax[0].imshow(np.moveaxis(input_img.numpy(), 0, 2))
-                ax[1].imshow(ground_truth)  # (256, 512, 3)
-                ax[2].imshow(decoded_pred)  # (256, 512, 3)
-                ax[0].axis('off')
-                ax[1].axis('off')
-                ax[2].axis('off')
-                ax[0].set_title('Input Image')
-                ax[1].set_title('Ground mask')
-                ax[2].set_title('Predicted mask')
-                plt.tight_layout()
-                plt.margins(x=0)
-                plt.margins(y=0)
-                self.logger.experiment.add_figure(f"Results/{batch_idx}_{img_idx}", fig)
+        # if self.trainer.current_epoch % 10 and batch_idx % 20:  # Log images every 20 batches
+        for img_idx, img_tuple in enumerate(zip(batch['image'], gt_batch, pred)):
+            # store images in variables
+            input_img = img_tuple[0].detach().cpu()
+            ground_truth = decode_segmap(img_tuple[1].detach().cpu())
+            encoded_pred = torch.argmax(torch.softmax(img_tuple[2], 0), 0)
+            decoded_pred = decode_segmap(encoded_pred.detach().cpu())
+            # put them in a plot, so they are all printed together
+            fig, ax = plt.subplots(ncols=3)  # , gridspec_kw={'height_ratios': [1, 1, 1]})
+            ax[0].imshow(np.moveaxis(input_img.numpy(), 0, 2))
+            ax[1].imshow(ground_truth)  # (256, 512, 3)
+            ax[2].imshow(decoded_pred)  # (256, 512, 3)
+            ax[0].axis('off')
+            ax[1].axis('off')
+            ax[2].axis('off')
+            ax[0].set_title('Input Image')
+            ax[1].set_title('Ground mask')
+            ax[2].set_title('Predicted mask')
+            plt.tight_layout()
+            plt.margins(x=0)
+            plt.margins(y=0)
+            self.logger.experiment.add_figure(f"Results/{batch_idx}_{img_idx}", fig)
 
     def validation_epoch_end(self, validation_step_outputs):
         n_batches = len(self.val_dataloader())

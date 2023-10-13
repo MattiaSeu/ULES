@@ -32,27 +32,35 @@ from models.ULES import Ules as ULES
               show_default=True,
               help='finetune on 10% of dataset only',
               default=False)
+@click.option('--only_bb',
+              '-bb',
+              is_flag=True,
+              show_default=True,
+              help='if flag true, load all state dict, otherwise just backbone',
+              default=True)
 
-def main(config, weights, checkpoint, reduced_data):
+def main(config, weights, checkpoint, reduced_data, only_bb):
     cfg = yaml.safe_load(open(config))
     torch.manual_seed(cfg['experiment']['seed'])
 
     reduced_data = True
-    weights = 'checkpoints/lastfixed.ckpt'
+    only_bb = True
+    weights = 'checkpoints/pixelpro50.ckpt'
 
     # Load data and model
     data = StatDataModule(cfg, reduced_data)
 
     if weights is None:
         model = ULES(cfg)
-    else:  # this works only if we pre-train the whole network (encoder + decoder)
+    else:
         # model = ULES.load_from_checkpoint(weights, cfg=cfg, strict=False)
         model = ULES(cfg)
         checkpoint = torch.load(weights)
         state_dict = checkpoint["state_dict"]
-        for k in list(state_dict.keys()):
-            if not k.startswith("model.backbone"):
-                del state_dict[k]
+        if only_bb:
+            for k in list(state_dict.keys()):
+                if not k.startswith("model.backbone"):
+                    del state_dict[k]
         model.load_state_dict(state_dict, strict=False)
         # chkpoint = torch.load(weights)
         # ULES.model.load_from_state_dict(chkpoint['model_state_dict'])
@@ -70,7 +78,6 @@ def main(config, weights, checkpoint, reduced_data):
                       logger=tb_logger,
                       # log_every_n_steps=10,
                       # resume_from_checkpoint=checkpoint,
-                      limit_val_batches=0.05,
                       max_epochs=cfg['train']['max_epoch'],
                       callbacks=[checkpoint_callback],
                       accumulate_grad_batches=4)

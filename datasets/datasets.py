@@ -65,6 +65,8 @@ class StatDataModule(LightningDataModule):
 
     def val_dataloader(self):
         if self.mode == 'pt': pass
+        if self.redata:
+            self.data_val = Subset(self.data_train, indices=range(0, 50))
         elif self.mode == 'eval': pass
         loader = DataLoader(self.data_val,
                             batch_size=1,  # self.cfg['train']['batch_size'] // self.cfg['train']['n_gpus'],

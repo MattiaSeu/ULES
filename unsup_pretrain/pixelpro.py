@@ -86,7 +86,7 @@ def main(data_path, extra, checkpoint, batch_size, num_workers):
 
     checkpoint_callback = ModelCheckpoint(dirpath="checkpoints", save_top_k=2, monitor="loss", save_last=True,
                                           every_n_epochs=50)
-    trainer = pl.Trainer(gpus=1, callbacks=[checkpoint_callback], resume_from_checkpoint=checkpoint, max_epochs=200)
+    trainer = pl.Trainer(gpus=-1, callbacks=[checkpoint_callback], resume_from_checkpoint=checkpoint, max_epochs=200)
 
     if extra:
         split_train = 'train_extra'

@@ -38,7 +38,11 @@ from model_params import VICRegParams
               show_default=True,
               help='adds an image logger during training to check the inputs are correct',
               default=False)
-def main(data_path, loss_type, extra, img_log, checkpoint):
+@click.option('--gpus',
+              '-g',
+              help='number of gpus to be used',
+              default=-1)
+def main(data_path, loss_type, extra, img_log, checkpoint, gpus):
     hparams = VICRegParams(
         encoder_arch='FCN_resnet50',
         dataset_name="cityscapes",
@@ -57,7 +61,7 @@ def main(data_path, loss_type, extra, img_log, checkpoint):
     summary(model)
     checkpoint_callback = ModelCheckpoint(dirpath="checkpoints", save_top_k=2, monitor="loss", save_last=True,
                                           every_n_epochs=5)
-    trainer = pl.Trainer(gpus=1, max_epochs=100, callbacks=[checkpoint_callback], resume_from_checkpoint=checkpoint)
+    trainer = pl.Trainer(gpus=gpus, max_epochs=100, callbacks=[checkpoint_callback], resume_from_checkpoint=checkpoint)
     trainer.fit(model)
 
 
