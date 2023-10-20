@@ -7,10 +7,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
 import numpy as np
-from pytorch_lightning.core.lightning import LightningModule
+from pytorch_lightning import LightningModule
 from models.blocks import DownsamplerBlock, UpsamplerBlock, non_bottleneck_1d
 from models.loss import mIoULoss, BinaryFocalLoss, CrossEntropyLoss
-from torchmetrics import IoU
+from torchmetrics import JaccardIndex
 import matplotlib.pyplot as plt
 from utils.segmap import encode_segmap, decode_segmap
 from segmentation_models_pytorch.losses import DiceLoss, LovaszLoss, JaccardLoss
@@ -20,6 +20,8 @@ class Ules(LightningModule):
 
     def __init__(self, cfg: dict):
         super().__init__()
+        self.training_step_outputs = []
+        self.validation_step_outputs = []
         self.n_classes = cfg['tasks']['semantic_segmentation']['n_classes']
         self.dropout = cfg['model']['dropout']
         self.epochs = cfg['train']['max_epoch']
@@ -32,7 +34,7 @@ class Ules(LightningModule):
                                   1.0489, 0.8786, 1.0023, 0.9539, 0.9843, 1.1116, 0.9037,
                                   1.0865, 1.0955, 1.0865, 1.1529, 1.0507])
 
-        self.iou = IoU(num_classes=20, reduction='none')
+        self.iou = JaccardIndex(num_classes=20, average='none', task="multiclass")
         self.accumulated_miou = torch.zeros(20).cuda()
 
         self.accumulated_iou_loss = 0.0
@@ -72,7 +74,7 @@ class Ules(LightningModule):
 
         return sem_loss
 
-    def training_epoch_end(self, training_step_outputs):
+    def on_training_epoch_end(self):
 
         n_samples = float(len(self.train_dataloader()))
 
@@ -83,12 +85,15 @@ class Ules(LightningModule):
             "Loss/sem_loss", sem_loss, self.trainer.current_epoch)
 
         self.accumulated_iou_loss *= 0.0
+        self.training_step_outputs.clear()
+
 
     def training_step(self, batch, batch_idx):  # , optimizer_idx):
         x = batch['image'].float()
         sem = self.forward(x)
         target = encode_segmap(batch['target'])
         loss = self.getLoss(sem, target)
+        self.training_step_outputs.append(loss)
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -128,9 +133,9 @@ class Ules(LightningModule):
             plt.margins(y=0)
             self.logger.experiment.add_figure(f"Results/{batch_idx}_{img_idx}", fig)
 
-    def validation_epoch_end(self, validation_step_outputs):
-        n_batches = len(self.val_dataloader())
-        n_samples = float(len(self.val_dataloader().dataset))
+    def on_validation_epoch_end(self):
+        n_batches = len(self.trainer.datamodule.val_dataloader())
+        n_samples = float(len(self.trainer.datamodule.val_dataloader().dataset))
 
         self.accumulated_miou /= n_batches
         self.val_loss /= n_samples
@@ -155,6 +160,7 @@ class Ules(LightningModule):
 
         self.accumulated_miou *= 0
         self.val_loss *= 0
+        self.validation_step_outputs.clear()
 
     def configure_optimizers(self):
         # OPTIMIZERS

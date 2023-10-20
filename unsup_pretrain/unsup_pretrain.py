@@ -41,7 +41,7 @@ from model_params import VICRegParams
 @click.option('--gpus',
               '-g',
               help='number of gpus to be used',
-              default=-1)
+              default=1)
 def main(data_path, loss_type, extra, img_log, checkpoint, gpus):
     hparams = VICRegParams(
         encoder_arch='FCN_resnet50',
@@ -56,13 +56,13 @@ def main(data_path, loss_type, extra, img_log, checkpoint, gpus):
         loss_type=loss_type,
         image_log=img_log
     )
-    checkpoint = "checkpoints/last.ckpt"
+    # checkpoint = "checkpoints/last.ckpt"
     model = SelfSupervisedMethod(hparams)
     summary(model)
     checkpoint_callback = ModelCheckpoint(dirpath="checkpoints", save_top_k=2, monitor="loss", save_last=True,
                                           every_n_epochs=5)
-    trainer = pl.Trainer(gpus=gpus, max_epochs=100, callbacks=[checkpoint_callback], resume_from_checkpoint=checkpoint)
-    trainer.fit(model)
+    trainer = pl.Trainer(devices=gpus, max_epochs=100, callbacks=[checkpoint_callback])
+    trainer.fit(model, ckpt_path=checkpoint)
 
 
 if __name__ == "__main__":
