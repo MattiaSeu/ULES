@@ -86,7 +86,7 @@ def main(data_path, extra, checkpoint, batch_size, num_workers):
 
     checkpoint_callback = ModelCheckpoint(dirpath="checkpoints", save_top_k=2, monitor="loss", save_last=True,
                                           every_n_epochs=50)
-    trainer = pl.Trainer(gpus=-1, callbacks=[checkpoint_callback], resume_from_checkpoint=checkpoint, max_epochs=200)
+    trainer = pl.Trainer(devices=-1, callbacks=[checkpoint_callback], max_epochs=200, strategy="ddp")
 
     if extra:
         split_train = 'train_extra'
@@ -103,7 +103,8 @@ def main(data_path, extra, checkpoint, batch_size, num_workers):
     trainer.fit(model,
                 DataLoader(train_data, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True, drop_last=True),
                 DataLoader(val_data, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True, drop_last=True),
-                )
+		ckpt_path=checkpoint
+	)
 
 
 if __name__ == '__main__':
