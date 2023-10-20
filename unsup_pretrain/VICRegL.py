@@ -113,3 +113,6 @@ def main(data_path, extra, checkpoint, batch_size, num_workers, gpus):
                                            pin_memory=True,
                                            drop_last=True),
                 ckpt_path=checkpoint)
+
+if __name__ == '__main__':
+    main()
