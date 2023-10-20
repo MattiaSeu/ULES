@@ -78,13 +78,11 @@ class VICRegL(pl.LightningModule):
               '-nw',
               help='number of workers for data loading (tentative equal to cpu cores)',
               default=12)
-@click.option('--multi',
-              '-m',
-              is_flag=True,
-              show_default=True,
-              help='use multiple GPUs',
-              default=False)
-def main(data_path, extra, checkpoint, batch_size, num_workers, multi):
+@click.option('--gpus',
+              '-g',
+              help='number of gpus to be used',
+              default=1)
+def main(data_path, extra, checkpoint, batch_size, num_workers, gpus):
     city_data_path = os.path.join(data_path, 'cityscapes/')
     model = VICRegL()
     transform = VICRegLTransform(n_local_views=0)
@@ -106,7 +104,7 @@ def main(data_path, extra, checkpoint, batch_size, num_workers, multi):
     checkpoint_callback = ModelCheckpoint(dirpath="checkpoints", save_top_k=2, monitor="loss", save_last=True,
                                           every_n_epochs=10)
 
-    trainer = pl.Trainer(max_epochs=100, devices=1, accelerator=accelerator, callbacks=[checkpoint_callback])
+    trainer = pl.Trainer(max_epochs=100, devices=gpus, accelerator=accelerator, callbacks=[checkpoint_callback])
     trainer.fit(model=model,
                 train_dataloaders=DataLoader(train_data, batch_size=batch_size, shuffle=True, num_workers=num_workers,
                                              pin_memory=True,
