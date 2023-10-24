@@ -22,8 +22,11 @@ class StatDataModule(LightningDataModule):
         super().__init__()
         # from cfg I can access all my stuff
         # as data path, data size and so on 
+        self.data_train = None
+        self.data_val = None
+        self.data_test = None
         self.cfg = cfg
-        self.redata = reduced_data
+        self.data_ratio = reduced_data
         self.len = -1
         self.setup()
         self.loader = [self.train_dataloader(), self.val_dataloader(), self.test_dataloader()]
@@ -45,15 +48,15 @@ class StatDataModule(LightningDataModule):
                                      mode='fine',
                                      target_type='semantic')
             self.data_test = CityData(self.cfg['data']['ft-path'], split='test',
-                                     mode='fine',
-                                     target_type='semantic')
+                                      mode='fine',
+                                      target_type='semantic')
         return
 
     def train_dataloader(self):
         if self.mode == 'eval': pass
-        if self.redata:
-            # ran_sampler = RandomSampler(self.data_train, replacement=True, num_samples=300)
-            self.data_train = Subset(self.data_train, indices=range(0, 300))
+        if self.data_ratio != 100:
+            subset_len_train = round(len(self.data_train) * (self.data_ratio / 100))
+            self.data_train = Subset(self.data_train, indices=range(0, subset_len_train))
 
         loader = DataLoader(self.data_train,
                             batch_size=self.cfg['train']['batch_size'] // self.cfg['train']['n_gpus'],
@@ -65,12 +68,15 @@ class StatDataModule(LightningDataModule):
 
     def val_dataloader(self):
         if self.mode == 'pt': pass
-        if self.redata:
+        if self.data_ratio != 100:
             pass
-            # self.data_val = Subset(self.data_train, indices=range(0, 50))
-        elif self.mode == 'eval': pass
+            # subset_len_val = round(len(self.data_val) * (self.data_ratio / 100))
+            # self.data_val = Subset(self.data_val, indices=range(0, subset_len_val))
+        elif self.mode == 'eval':
+            pass
+
         loader = DataLoader(self.data_val,
-                            batch_size=1,  # self.cfg['train']['batch_size'] // self.cfg['train']['n_gpus'],
+                            self.cfg['train']['batch_size'] // self.cfg['train']['n_gpus'],
                             num_workers=self.cfg['train']['workers'],
                             pin_memory=True,
                             shuffle=False)
