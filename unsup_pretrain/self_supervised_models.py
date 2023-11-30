@@ -5,8 +5,6 @@ from functools import partial
 from typing import Optional
 from typing import Union
 
-import ipdb
-
 import attr
 import pytorch_lightning as pl
 import torch
@@ -24,8 +22,7 @@ from sklearn.linear_model import LogisticRegression
 import numpy as np
 
 import os
-from data_loading import CityData, CityDataContrastive
-from utils.tenprint import print_tensor
+from unsup_pretrain.data_loading.data_loading import CityDataContrastive
 from collections import OrderedDict
 from matplotlib import pyplot as plt
 

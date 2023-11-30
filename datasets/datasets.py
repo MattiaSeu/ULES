@@ -40,16 +40,21 @@ class StatDataModule(LightningDataModule):
 
         self.mode = self.cfg['train']['mode']
 
-        if stage == 'fit' or stage is None:
-            self.data_train = CityData(self.cfg['data']['ft-path'], split='train',
-                                       mode='fine',
-                                       target_type='semantic')
-            self.data_val = CityData(self.cfg['data']['ft-path'], split='val',
-                                     mode='fine',
-                                     target_type='semantic')
-            self.data_test = CityData(self.cfg['data']['ft-path'], split='test',
-                                      mode='fine',
-                                      target_type='semantic')
+        if "cityscape" in self.cfg['data']['ft-path']:
+            if stage == 'fit' or stage is None:
+                self.data_train = CityData(self.cfg['data']['ft-path'], split='train',
+                                           mode='fine',
+                                           target_type='semantic')
+                self.data_val = CityData(self.cfg['data']['ft-path'], split='val',
+                                         mode='fine',
+                                         target_type='semantic')
+                self.data_test = CityData(self.cfg['data']['ft-path'], split='val',
+                                          mode='fine',
+                                          target_type='semantic')
+        elif "kitti" in self.cfg['data']['ft-path']:
+            if stage == 'fit' or stage is None:
+                self.data_train = KittiRangeDataset(self.cfg['data']['ft-path'], split='train')
+                self.data_val = KittiRangeDataset(self.cfg['data']['ft-path'], split='test')
         return
 
     def train_dataloader(self):
@@ -68,13 +73,7 @@ class StatDataModule(LightningDataModule):
 
     def val_dataloader(self):
         if self.mode == 'pt': pass
-        if self.data_ratio != 100:
-            pass
-            # subset_len_val = round(len(self.data_val) * (self.data_ratio / 100))
-            # self.data_val = Subset(self.data_val, indices=range(0, subset_len_val))
-        elif self.mode == 'eval':
-            pass
-
+        elif self.mode == 'eval': pass
         loader = DataLoader(self.data_val,
                             self.cfg['train']['batch_size'] // self.cfg['train']['n_gpus'],
                             num_workers=self.cfg['train']['workers'],
@@ -84,13 +83,13 @@ class StatDataModule(LightningDataModule):
         return loader
 
     def test_dataloader(self):
-        if self.mode != "eval": pass
+        if self.mode != "eval": return
         loader = DataLoader(self.data_test,
                             self.cfg['train']['batch_size'] // self.cfg['train']['n_gpus'],
                             num_workers=self.cfg['train']['workers'],
                             pin_memory=True,
                             shuffle=False)
-        self.len = self.data_val.__len__()
+        self.len = self.data_test.__len__()
         return loader
 
 
@@ -139,3 +138,75 @@ class CityData(Cityscapes):
         # tra['mask'] = tra['mask'].permute(1, 2, 0).squeeze()
         return tra
     # torch.unsqueeze(transformed['mask'], 0)
+
+
+import torch
+import os
+import matplotlib.pyplot as plt
+from PIL import Image
+from torchvision import transforms
+from torch.utils.data import Dataset, DataLoader
+
+
+class KittiRangeDataset(Dataset):
+
+    def __init__(self, root_dir, split: str, transform=None):
+        """
+        Arguments:.
+            root_dir (string): Directory with all the images.
+            transform (callable, optional): Optional transform to be applied
+                on a sample.
+        """
+        self.root_dir = os.path.join(root_dir, split)
+        self.split = split
+        self.transform = transform
+        self.image_list = os.listdir(self.root_dir + "/rgb/")
+
+    def __len__(self):
+        return len(self.image_list)
+
+    def __getitem__(self, idx):
+        if torch.is_tensor(idx):
+            idx = idx.tolist()
+
+        rgb_root = os.path.join(self.root_dir, "rgb")
+        target_root = os.path.join(self.root_dir, "gray")
+        range_root = os.path.join(self.root_dir, "sequences")
+
+        img_path = os.path.join(rgb_root, self.image_list[idx])
+
+        image = Image.open(img_path).convert('RGB')
+
+        seq_name_list = self.image_list[idx].split(sep=".")[0].split(sep="_")
+
+
+        target_path = os.path.join(target_root, f"{seq_name_list[0]}_{seq_name_list[1]}.png")
+
+        target = Image.open(target_path).convert('L')
+
+        range_view = Image.open(range_root + "/" + seq_name_list[0] + "/range_projection/" +
+                           seq_name_list[1] + ".png").convert("LA")
+
+        transform_image = transforms.Compose(
+            [
+                transforms.Resize((90, 160), transforms.InterpolationMode.BILINEAR),
+                transforms.ToTensor(),
+            ]
+        )
+
+        transform_range = transforms.Compose(
+            [
+                transforms.Resize((90, 160), transforms.InterpolationMode.NEAREST),
+                transforms.ToTensor(),
+            ]
+        )
+
+        image = transform_image(image)
+        target = transform_range(target).squeeze(0) * 255
+        range_view = transform_image(range_view)
+
+        range_view = range_view[1]
+        range_view = range_view[None, :, :]
+        sample = {"image": torch.cat((image, range_view), 0), "target": target.type(torch.int64)}
+
+        return sample

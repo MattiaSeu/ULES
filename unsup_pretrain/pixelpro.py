@@ -1,11 +1,10 @@
 import torch
-import os
 import pytorch_lightning as pl
 from pixel_level_contrastive_learning.pixel_level_contrastive_learning import PixelCL
 from torchvision import models
 from pytorch_lightning.callbacks import ModelCheckpoint
-from data_loading import CityDataPixel
 from torch.utils.data import DataLoader
+from unsup_pretrain.data_loading.NuScenes import NuScenes
 import click
 
 
@@ -60,14 +59,15 @@ class LightningPixelCL(pl.LightningModule):
 def main(data_path, extra, checkpoint, batch_size, num_workers, gpus):
     resnet = models.segmentation.fcn_resnet50(pretrained=False, progress=True, num_classes=20,
                                               aux_loss=None)
-    # data_path = "~/data_dummy"
-    city_data_path = os.path.join(data_path, 'cityscapes/')
+    resnet.backbone.conv1 = torch.nn.Conv2d(4, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
+    data_path = "/home/matt/data/nuScenes/"
+    # city_data_path = os.path.join(data_path, 'cityscapes/')
 
     # extra = False
 
     learner = PixelCL(
         resnet,
-        image_size=[128, 256],
+        image_size=[90, 160],
         hidden_layer_pixel='classifier',  # leads to output of 8x8 feature map for pixel-level learning
         hidden_layer_instance=-2,  # leads to output for instance-level learning
         projection_size=128,  # size of projection output, 256 was used in the paper
@@ -81,7 +81,8 @@ def main(data_path, extra, checkpoint, batch_size, num_workers, gpus):
         similarity_temperature=0.3,  # temperature for the cosine similarity for the pixel contrastive loss
         alpha=1.,  # weight of the pixel propagation loss (pixpro) vs pixel CL loss
         use_pixpro=True,  # do pixel pro instead of pixel contrast loss, defaults to pixpro, since it is the best one
-        cutout_ratio_range=(0.6, 0.8)  # a random ratio is selected from this range for the random cutout
+        cutout_ratio_range=(0.6, 0.8),  # a random ratio is selected from this range for the random cutout
+        use_range_image=True
     )
 
     opt = torch.optim.AdamW(learner.parameters(), lr=1e-4)
@@ -91,7 +92,7 @@ def main(data_path, extra, checkpoint, batch_size, num_workers, gpus):
     checkpoint_callback = ModelCheckpoint(dirpath="checkpoints", save_top_k=2, monitor="loss", save_last=True,
                                           every_n_epochs=50)
 
-    trainer = pl.Trainer(devices=gpus, callbacks=[checkpoint_callback], max_epochs=200)
+    trainer = pl.Trainer(devices=gpus, callbacks=[checkpoint_callback], max_epochs=500)
 
     if extra:
         split_train = 'train_extra'
@@ -100,15 +101,19 @@ def main(data_path, extra, checkpoint, batch_size, num_workers, gpus):
         split_train = 'train'
         mode = 'fine'
 
-    train_data = CityDataPixel(city_data_path, split=split_train, mode=mode, target_type='semantic', transforms=None)
-    val_data = CityDataPixel(city_data_path, split='val', mode=mode, target_type='semantic', transforms=None)
+    # train_data = nataPixel(city_data_path, split=split_train, mode=mode, target_type='semantic', transforms=None)
+    # val_data = CityDataPixel(city_data_path, split='val', mode=mode, target_type='semantic', transforms=None)
+    train_data = NuScenes(data_source=data_path)
+    # val_data = NuScenes()
 
     batch_size = batch_size
 
     trainer.fit(model,
                 DataLoader(train_data, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True, drop_last=True),
-                DataLoader(val_data, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True, drop_last=True),
+                # DataLoader(val_data, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True, drop_last=True),
                 ckpt_path=checkpoint)
+
+    # trainer.save_checkpoint("checkpoints/pixpro_range_final.ckpt")
 
 
 if __name__ == '__main__':

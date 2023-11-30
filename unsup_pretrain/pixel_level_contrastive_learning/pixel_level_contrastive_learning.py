@@ -293,7 +293,8 @@ class PixelCL(nn.Module):
             use_pixpro=True,
             cutout_ratio_range=(0.6, 0.8),
             cutout_interpolate_mode='nearest',
-            coord_cutout_interpolate_mode='bilinear'
+            coord_cutout_interpolate_mode='bilinear',
+            use_range_image=False
     ):
         super().__init__()
 
@@ -345,7 +346,11 @@ class PixelCL(nn.Module):
         self.to(device)
 
         # send a mock image tensor to instantiate singleton parameters
-        self.forward(torch.randn(2, 3, image_size[0], image_size[1], device=device))
+        if use_range_image:
+            self.forward(torch.randn(2, 4, image_size[0], image_size[1], device=device))
+        else:
+            self.forward(torch.randn(2, 3, image_size[0], image_size[1], device=device))
+
 
     @singleton('target_encoder')
     def _get_target_encoder(self):
@@ -362,6 +367,12 @@ class PixelCL(nn.Module):
         update_moving_average(self.target_ema_updater, self.target_encoder, self.online_encoder)
 
     def forward(self, x, return_positive_pairs=False):
+        cropped_points = False
+
+        if isinstance(x, dict):
+            cropped_points = x['cropped_points']
+            x = x['image']
+
         shape, device, prob_flip = x.shape, x.device, self.prob_rand_hflip
 
         rand_flip_fn = lambda t: torch.flip(t, dims=(-1,))
@@ -375,11 +386,20 @@ class PixelCL(nn.Module):
 
         image_one_cutout = cutout_and_resize(x, cutout_coordinates_one, mode=self.cutout_interpolate_mode)
         image_two_cutout = cutout_and_resize(x, cutout_coordinates_two, mode=self.cutout_interpolate_mode)
+        if cropped_points:
+            cropped_points_one_cutout = cutout_and_resize(cropped_points, cutout_coordinates_one, mode=self.cutout_interpolate_mode)
+            cropped_points_two_cutout = cutout_and_resize(cropped_points, cutout_coordinates_two, mode=self.cutout_interpolate_mode)
+            cropped_points_one_cutout = flip_image_one_fn(cropped_points_one_cutout)
+            cropped_points_two_cutout = flip_image_two_fn(cropped_points_two_cutout)
 
         image_one_cutout = flip_image_one_fn(image_one_cutout)
         image_two_cutout = flip_image_two_fn(image_two_cutout)
 
-        image_one_cutout, image_two_cutout = self.augment1(image_one_cutout), self.augment2(image_two_cutout)
+        image_one_cutout_tmp, image_two_cutout_tmp = self.augment1(image_one_cutout[:, :3]), self.augment2(image_two_cutout[:, :3])
+        #  we don't apply augments to the intensity points as they pertain only to color
+
+        image_one_cutout[:, :3] = image_one_cutout_tmp
+        image_two_cutout[:, :3] = image_two_cutout_tmp
 
         proj_pixel_one, proj_instance_one = self.online_encoder(image_one_cutout)
         proj_pixel_two, proj_instance_two = self.online_encoder(image_two_cutout)

@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 from PIL import ImageFilter
 from torchvision import transforms
-from transforms_custom import RandomCropWithCoord, RandomFlipWithReturn, RandomSizeCropWithCoord
+from ..transforms_custom import RandomCropWithCoord, RandomFlipWithReturn, RandomSizeCropWithCoord
 from PIL import ImageOps
 
 from typing import Any, Callable, Dict, List, Optional, Union, Tuple

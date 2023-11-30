@@ -12,10 +12,10 @@ from models.blocks import DownsamplerBlock, UpsamplerBlock, non_bottleneck_1d
 from models.loss import mIoULoss, BinaryFocalLoss, CrossEntropyLoss
 from torchmetrics import JaccardIndex
 import matplotlib.pyplot as plt
-from utils.segmap import encode_segmap, decode_segmap
+from utils.segmap import encode_segmap, decode_segmap, kitti_encode, kitti_decode
 from segmentation_models_pytorch.losses import DiceLoss, LovaszLoss, JaccardLoss
 
-idx2class_map = ['unlabelled', 'road',
+cityscapes_idx2class_map = ['unlabelled', 'road',
                  'sidewalk', 'building',
                  'wall', 'fence',
                  'pole', 'traffic_light',
@@ -41,35 +41,27 @@ class Ules(LightningModule):
         self.lr = cfg['train']['lr']
         self.init = cfg['model']['initialization']
 
-        self.sem_loss = mIoULoss([1., 0.8373, 0.9180, 0.8660, 1.0345, 1.0166, 0.9969, 0.9754,
-                                  1.0489, 0.8786, 1.0023, 0.9539, 0.9843, 1.1116, 0.9037,
-                                  1.0865, 1.0955, 1.0865, 1.1529, 1.0507])
+        self.dataset_path = cfg["data"]["ft-path"]
 
-        self.iou = JaccardIndex(num_classes=20, average='none', task="multiclass")
-        self.accumulated_miou = torch.zeros(20).cuda()
+        # self.sem_loss = mIoULoss([1., 0.8373, 0.9180, 0.8660, 1.0345, 1.0166, 0.9969, 0.9754,
+        #                           1.0489, 0.8786, 1.0023, 0.9539, 0.9843, 1.1116, 0.9037,
+        #                           1.0865, 1.0955, 1.0865, 1.1529, 1.0507])
+        sem_loss_weights = [1] * self.n_classes
+        self.sem_loss = mIoULoss(sem_loss_weights)
 
-        self.accumulated_iou_loss = 0.0
+        self.iou = JaccardIndex(num_classes=self.n_classes, average='none', task="multiclass")
+        self.miou = JaccardIndex(num_classes=self.n_classes, average='weighted', task="multiclass")
+        self.accumulated_iou = torch.zeros(self.n_classes).cuda()
+        self.accumulated_miou = torch.zeros(1).cuda()
+
+        self.accumulated_miou_loss = 0.0
         self.val_loss = 0.0
 
-        # encoder
-        # self.encoder = ERFNetEncoder(self.n_classes, dropout=self.dropout, init=self.init)
-
-        # decoders
-        # self.decoder_semseg = DecoderSemanticSegmentation(self.n_classes, self.dropout, init=self.init)
-
-        self.model = torchvision.models.segmentation.fcn_resnet50(pretrained=False, progress=True, num_classes=20,
+        self.model = torchvision.models.segmentation.fcn_resnet50(pretrained=False, progress=True, num_classes=self.n_classes,
                                                                   aux_loss=None)
+        self.model.backbone.conv1 = torch.nn.Conv2d(4, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
 
     def forward(self, input):
-        # encoder -- possibly from pre-trained weights
-        # out = self.encoder(input)
-
-        # encoder_lr = self.scheduler_encoder.get_last_lr()
-        # self.logger.experiment.add_scalar("LR/encoder", encoder_lr[0], self.trainer.current_epoch)
-
-        # semantic segmentation
-        # semantic, skips = self.decoder_semseg(out)
-
         out = self.model(input)
         return out['out']
 
@@ -79,7 +71,7 @@ class Ules(LightningModule):
         sem_loss = self.sem_loss(pred, target)
 
         if is_train:
-            self.accumulated_iou_loss += sem_loss.detach()
+            self.accumulated_miou_loss += sem_loss.detach()
         else:
             self.val_loss += sem_loss.detach()
 
@@ -89,20 +81,24 @@ class Ules(LightningModule):
 
         n_samples = float(len(self.train_dataloader()))
 
-        sem_loss = self.accumulated_iou_loss / n_samples
+        sem_loss = self.accumulated_miou_loss / n_samples
 
         # tensorboard logs
         self.logger.experiment.add_scalar(
             "Loss/sem_loss", sem_loss, self.trainer.current_epoch)
 
-        self.accumulated_iou_loss *= 0.0
+        self.accumulated_miou_loss *= 0.0
         self.training_step_outputs.clear()
 
-    def training_step(self, batch, batch_idx):  # , optimizer_idx):
+    def training_step(self, batch, batch_idx):
         x = batch['image'].float()
-        sem = self.forward(x)
-        target = encode_segmap(batch['target'])
-        loss = self.getLoss(sem, target)
+        pred = self.forward(x)
+        gt = batch['target']
+        if "cityscapes" in self.dataset_path:
+            gt_encoded = encode_segmap(gt).long()  # only use a subset of classes
+        elif "kitti" in self.dataset_path:
+            gt_encoded = gt
+        loss = self.getLoss(pred, gt_encoded)
         self.log('sem_loss', loss)
         self.training_step_outputs.append(loss)
         return loss
@@ -112,79 +108,137 @@ class Ules(LightningModule):
         gt = batch['target']
 
         pred = self.forward(x)
-        gt_batch = encode_segmap(gt).long()
-        iou = self.iou(pred, gt_batch)
+        if "cityscapes" in self.dataset_path:
+            gt_encoded = encode_segmap(gt).long()  # only use a subset of classes
+        elif "kitti" in self.dataset_path:
+            gt_encoded = gt
+        iou = self.iou(pred, gt_encoded)
+        miou = self.miou(pred, gt_encoded)
 
         _ = self.getLoss(pred, batch['target'], False)
 
-        # we sum all the ious, because in validation_epoch_end we divide by the number of samples = mean over validation set
-        self.accumulated_miou += iou
+        # sum all the ious because in validation_epoch_end we divide by the number of batches = mean over validation set
+        self.accumulated_iou += iou
+        self.accumulated_miou += miou
 
-        if self.trainer.current_epoch == 0 or self.trainer.current_epoch == 99:  # Log images every 20 batches
-            for img_idx, img_tuple in enumerate(zip(batch['image'], gt_batch, pred)):
-                # store images in variables
-                input_img = img_tuple[0].detach().cpu()
-                ground_truth = decode_segmap(img_tuple[1].detach().cpu())
-                encoded_pred = torch.argmax(torch.softmax(img_tuple[2], 0), 0)
+        # Log images every at start and end epoch
+        # if self.trainer.current_epoch == 0 or self.trainer.current_epoch == 99:
+        for img_idx, img_tuple in enumerate(zip(batch['image'], gt_encoded, pred)):
+            # store images in variables
+            # input_img = img_tuple[0].detach().cpu()
+            input_img = img_tuple[0][0:3, ...].detach().cpu()
+            if "cityscapes" in self.dataset_path:
+                ground_truth = decode_segmap(img_tuple[1][..., 0:3, ...].detach().cpu())
+            elif "kitti" in self.dataset_path:
+                ground_truth = kitti_decode(img_tuple[1].detach().cpu())
+            encoded_pred = torch.argmax(torch.softmax(img_tuple[2], 0), 0)
+            if "cityscapes" in self.dataset_path:
                 decoded_pred = decode_segmap(encoded_pred.detach().cpu())
-                # put them in a plot, so they are all printed together
-                fig, ax = plt.subplots(ncols=3)  # , gridspec_kw={'height_ratios': [1, 1, 1]})
-                ax[0].imshow(np.moveaxis(input_img.numpy(), 0, 2))
-                ax[1].imshow(ground_truth)  # (256, 512, 3)
-                ax[2].imshow(decoded_pred)  # (256, 512, 3)
-                ax[0].axis('off')
-                ax[1].axis('off')
-                ax[2].axis('off')
-                ax[0].set_title('Input Image')
-                ax[1].set_title('Ground mask')
-                ax[2].set_title('Predicted mask')
-                plt.tight_layout()
-                plt.margins(x=0)
-                plt.margins(y=0)
-                self.logger.experiment.add_figure(f"Results/{batch_idx}_{img_idx}", fig)
+            elif "kitti" in self.dataset_path:
+                decoded_pred = kitti_decode(encoded_pred.detach().cpu())
+            # put them in a plot, so they are all printed together
+            fig, ax = plt.subplots(ncols=3)
+            ax[0].imshow(np.moveaxis(input_img.numpy(), 0, 2))
+            ax[1].imshow(ground_truth)
+            ax[2].imshow(decoded_pred)
+            ax[0].axis('off')
+            ax[1].axis('off')
+            ax[2].axis('off')
+            ax[0].set_title('Input Image')
+            ax[1].set_title('Ground mask')
+            ax[2].set_title('Predicted mask')
+            plt.tight_layout()
+            plt.margins(x=0)
+            plt.margins(y=0)
+            self.logger.experiment.add_figure(f"Results/{batch_idx}_{img_idx}", fig)
 
     def on_validation_epoch_end(self):
         n_batches = len(self.trainer.datamodule.val_dataloader())
         n_samples = float(len(self.trainer.datamodule.val_dataloader().dataset))
 
+        self.accumulated_iou /= n_batches
         self.accumulated_miou /= n_batches
         self.val_loss /= n_samples
 
-        self.logger.experiment.add_scalars(
-            "Metrics_iou", {'unlabelled': self.accumulated_miou[0], 'road': self.accumulated_miou[1],
-                            'sidewalk': self.accumulated_miou[2], 'building': self.accumulated_miou[3],
-                            'wall': self.accumulated_miou[4], 'fence': self.accumulated_miou[5],
-                            'pole': self.accumulated_miou[6], 'traffic_light': self.accumulated_miou[7],
-                            'traffic_sign': self.accumulated_miou[8], 'vegetation': self.accumulated_miou[9],
-                            'terrain': self.accumulated_miou[10], 'sky': self.accumulated_miou[11],
-                            'person': self.accumulated_miou[12], 'rider': self.accumulated_miou[13],
-                            'car': self.accumulated_miou[14], 'truck': self.accumulated_miou[15],
-                            'bus': self.accumulated_miou[16], 'train': self.accumulated_miou[17],
-                            'motorcycle': self.accumulated_miou[18], 'bicycle': self.accumulated_miou[19]},
-            self.trainer.current_epoch)
-        # self.logger.experiment.add_scalar(
-        #     "avg_iou", self.avg_iou_store, self.trainer.current_epoch
-        # )
+        if "cityscapes" in self.dataset_path:
+            self.logger.experiment.add_scalars(
+                "Metrics_iou", {'unlabelled': self.accumulated_iou[0], 'road': self.accumulated_iou[1],
+                                'sidewalk': self.accumulated_iou[2], 'building': self.accumulated_iou[3],
+                                'wall': self.accumulated_iou[4], 'fence': self.accumulated_iou[5],
+                                'pole': self.accumulated_iou[6], 'traffic_light': self.accumulated_iou[7],
+                                'traffic_sign': self.accumulated_iou[8], 'vegetation': self.accumulated_iou[9],
+                                'terrain': self.accumulated_iou[10], 'sky': self.accumulated_iou[11],
+                                'person': self.accumulated_iou[12], 'rider': self.accumulated_iou[13],
+                                'car': self.accumulated_iou[14], 'truck': self.accumulated_iou[15],
+                                'bus': self.accumulated_iou[16], 'train': self.accumulated_iou[17],
+                                'motorcycle': self.accumulated_iou[18], 'bicycle': self.accumulated_iou[19]},
+                self.trainer.current_epoch)
+        elif "kitti" in self.dataset_path:
+            self.logger.experiment.add_scalars(
+                "Metrics_iou", {'unlabelled': self.accumulated_iou[0], 'building': self.accumulated_iou[1],
+                                'road': self.accumulated_iou[2], 'sidewalk': self.accumulated_iou[3],
+                                'fence': self.accumulated_iou[4], 'vegetation': self.accumulated_iou[5],
+                                'pole': self.accumulated_iou[6], 'car': self.accumulated_iou[7],
+                                'sign': self.accumulated_iou[8], 'pedestrian': self.accumulated_iou[9],
+                                'cyclist': self.accumulated_iou[10], 'sky': self.accumulated_iou[11]},
+                self.trainer.current_epoch)
+
+
+        self.logger.experiment.add_scalar(
+            "mean_IoU", self.accumulated_miou, self.current_epoch
+        )
         self.logger.experiment.add_scalar(
             "Loss/val_total_loss", self.val_loss, self.trainer.current_epoch)
 
+        self.accumulated_iou *= 0
         self.accumulated_miou *= 0
         self.val_loss *= 0
         self.validation_step_outputs.clear()
 
+    def test_step(self, batch, batch_idx):
+        x = batch['image'].float()
+        gt = batch['target']
+
+        pred = self.forward(x)
+        if "cityscapes" in self.dataset_path:
+            gt_encoded = encode_segmap(gt).long()  # only use a subset of classes
+        elif "kitti" in self.dataset_path:
+            gt_encoded = gt # only use a subset of classes
+        iou = self.iou(pred, gt_encoded)
+        miou = self.miou(pred, gt_encoded)
+
+        # sum all the ious because in validation_epoch_end we divide by the number of batches = mean over validation set
+        self.accumulated_iou += iou
+        self.accumulated_miou += miou
+
+    def on_test_epoch_end(self):
+        n_batches = len(self.trainer.datamodule.test_dataloader())
+        self.accumulated_iou /= n_batches
+        self.accumulated_miou /= n_batches
+
+        self.logger.experiment.add_scalars(
+            "Metrics_iou", {'unlabelled': self.accumulated_iou[0], 'road': self.accumulated_iou[1],
+                            'sidewalk': self.accumulated_iou[2], 'building': self.accumulated_iou[3],
+                            'wall': self.accumulated_iou[4], 'fence': self.accumulated_iou[5],
+                            'pole': self.accumulated_iou[6], 'traffic_light': self.accumulated_iou[7],
+                            'traffic_sign': self.accumulated_iou[8], 'vegetation': self.accumulated_iou[9],
+                            'terrain': self.accumulated_iou[10], 'sky': self.accumulated_iou[11],
+                            'person': self.accumulated_iou[12], 'rider': self.accumulated_iou[13],
+                            'car': self.accumulated_iou[14], 'truck': self.accumulated_iou[15],
+                            'bus': self.accumulated_iou[16], 'train': self.accumulated_iou[17],
+                            'motorcycle': self.accumulated_iou[18], 'bicycle': self.accumulated_iou[19]},
+            self.trainer.current_epoch)
+        self.logger.experiment.add_scalar(
+            "mean_IoU", self.accumulated_miou, self.current_epoch
+        )
+
+        self.accumulated_iou *= 0
+        self.accumulated_miou *= 0
+
     def configure_optimizers(self):
-        # OPTIMIZERS
-        # self.encoder_optimizer = torch.optim.AdamW(
-        #     self.encoder.parameters(), lr=self.lr[0])
-        # self.semantic_optimizer = torch.optim.AdamW(
-        #     self.decoder_semseg.parameters(), lr=self.lr[1])
-        # # SCHEDULERS
-        # self.scheduler_encoder = torch.optim.lr_scheduler.StepLR(
-        #     self.encoder_optimizer, step_size=25, gamma=0.9)
         self.optimizers = torch.optim.AdamW(
             self.model.classifier.parameters(), lr=self.lr[0])
 
-        # return [self.encoder_optimizer, self.semantic_optimizer], [self.scheduler_encoder]
         return [self.optimizers]
 
 

@@ -8,20 +8,16 @@ from collections import OrderedDict
 import attr
 import torch
 import torchvision
-from typing import Tuple
-import numpy as np
-from PIL import ImageFilter, Image
+from PIL import ImageFilter
 from torchvision import transforms
 from torchvision.datasets import CIFAR10
 from torchvision.datasets import STL10
-from torchvision.datasets import caltech
 from torchvision.datasets import Cityscapes
 from torchvision.datasets import ImageFolder
 
 from model_params import ModelParams
 
-from matplotlib import pyplot as plt
-from data_loading import CityData, CityDataContrastive
+from unsup_pretrain.data_loading.data_loading import CityDataContrastive
 import ws_resnet
 
 

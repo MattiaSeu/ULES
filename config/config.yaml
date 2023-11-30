@@ -4,16 +4,17 @@ experiment:
 
 ##Data
 data:
-    ft-path: "~/data/cityscapes/" # path to dataset for fine tuning
+#    ft-path: "/home/matt/data_dummy/cityscapes/" # path to dataset for fine tuning
+    ft-path: "/home/matt/data/kitti_sem/" # path to dataset for fine tuning
 
 ##Training
 train:
-    mode: 'train' 
+    mode: 'train'
     n_gpus: 1
-    workers: 12
+    workers: 8
     max_epoch: 100
     lr: [0.001, 0.001, 0.0008, 0.0008]
-    batch_size: 16
+    batch_size: 8
     overfit: False
     validation_warmup: 10
 
@@ -24,4 +25,4 @@ model:
 
 tasks:
     semantic_segmentation:
-        n_classes: 20
+        n_classes: 12
