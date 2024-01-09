@@ -17,7 +17,7 @@ from torchvision.datasets import ImageFolder
 
 from model_params import ModelParams
 
-from unsup_pretrain.data_loading.data_loading import CityDataContrastive
+from data_loading.data_loading import CityDataContrastive
 import ws_resnet
 
 

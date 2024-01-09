@@ -4,7 +4,7 @@ import sys
 
 import numpy as np
 
-from ipb_base import IPB_Base
+from data_loading.ipb_base import IPB_Base
 from torchvision import transforms
 import torch
 

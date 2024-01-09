@@ -28,7 +28,24 @@ def rand_true(prob):
     return random.random() < prob
 
 
-def singleton(cache_key):
+def singleton_rgb(cache_key):
+    def inner_fn(fn):
+        @wraps(fn)
+        def wrapper(self, *args, **kwargs):
+            instance = getattr(self, cache_key)
+            if instance is not None:
+                return instance
+
+            instance = fn(self, *args, **kwargs)
+            setattr(self, cache_key, instance)
+            return instance
+
+        return wrapper
+
+    return inner_fn
+
+
+def singleton_range(cache_key):
     def inner_fn(fn):
         @wraps(fn)
         def wrapper(self, *args, **kwargs):
@@ -180,7 +197,7 @@ class PPM(nn.Module):
 
 # a wrapper class for the base neural network
 # will manage the interception of the hidden layer output
-# and pipe it into the projecter and predictor nets
+# and pipe it into the projector and predictor nets
 
 class NetWrapper(nn.Module):
     def __init__(
@@ -233,13 +250,25 @@ class NetWrapper(nn.Module):
         instance_layer.register_forward_hook(self._hook_instance)
         self.hook_registered = True
 
-    @singleton('pixel_projector')
+    @singleton_rgb('pixel_projector')
     def _get_pixel_projector(self, hidden):
         _, dim, *_ = hidden.shape
         projector = ConvMLP(dim, self.projection_size, self.projection_hidden_size)
         return projector.to(hidden)
 
-    @singleton('instance_projector')
+    @singleton_rgb('instance_projector')
+    def _get_instance_projector(self, hidden):
+        _, dim = hidden.shape
+        projector = MLP(dim, self.projection_size, self.projection_hidden_size)
+        return projector.to(hidden)
+
+    @singleton_range('pixel_projector')
+    def _get_pixel_projector(self, hidden):
+        _, dim, *_ = hidden.shape
+        projector = ConvMLP(dim, self.projection_size, self.projection_hidden_size)
+        return projector.to(hidden)
+
+    @singleton_range('instance_projector')
     def _get_instance_projector(self, hidden):
         _, dim = hidden.shape
         projector = MLP(dim, self.projection_size, self.projection_hidden_size)
@@ -272,7 +301,7 @@ class NetWrapper(nn.Module):
 
 # main class
 
-class PixelCL(nn.Module):
+class PixelCL_DB(nn.Module):
     def __init__(
             self,
             net,
@@ -310,7 +339,7 @@ class PixelCL(nn.Module):
         self.augment2 = default(augment_fn2, self.augment1)
         self.prob_rand_hflip = prob_rand_hflip
 
-        self.online_encoder = NetWrapper(
+        self.online_encoder_rgb = NetWrapper(
             net=net,
             projection_size=projection_size,
             projection_hidden_size=projection_hidden_size,
@@ -318,8 +347,20 @@ class PixelCL(nn.Module):
             layer_instance=hidden_layer_instance
         )
 
-        self.target_encoder = None
-        self.target_ema_updater = EMA(moving_average_decay)
+        net_1ch = copy.deepcopy(net)
+        net_1ch.backbone.conv1 = torch.nn.Conv2d(1, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
+        self.online_encoder_gray = NetWrapper(
+            net=net_1ch,
+            projection_size=projection_size,
+            projection_hidden_size=projection_hidden_size,
+            layer_pixel=hidden_layer_pixel,
+            layer_instance=hidden_layer_instance
+        )
+
+        self.target_encoder_rgb = None
+        self.target_encoder_gray = None
+        self.target_ema_updater_rgb = EMA(moving_average_decay)
+        self.target_ema_updater_range = EMA(moving_average_decay)
 
         self.distance_thres = distance_thres
         self.similarity_temperature = similarity_temperature
@@ -339,7 +380,8 @@ class PixelCL(nn.Module):
         self.coord_cutout_interpolate_mode = coord_cutout_interpolate_mode
 
         # instance level predictor
-        self.online_predictor = MLP(projection_size, projection_size, projection_hidden_size)
+        self.online_predictor_rgb = MLP(projection_size, projection_size, projection_hidden_size)
+        self.online_predictor_gray = MLP(projection_size, projection_size, projection_hidden_size)
 
         # get device of network and make wrapper same device
         device = get_module_device(net)
@@ -355,27 +397,39 @@ class PixelCL(nn.Module):
         else:
             self.forward(torch.randn(2, 3, image_size[0], image_size[1], device=device))
 
+    @singleton_rgb('target_encoder_rgb')
+    def _get_target_encoder_rgb(self):
+        target_encoder_rgb = copy.deepcopy(self.online_encoder_rgb)
+        set_requires_grad(target_encoder_rgb, False)
+        return target_encoder_rgb
 
-    @singleton('target_encoder')
-    def _get_target_encoder(self):
-        target_encoder = copy.deepcopy(self.online_encoder)
-        set_requires_grad(target_encoder, False)
-        return target_encoder
+    @singleton_range('target_encoder_gray')
+    def _get_target_encoder_gray(self):
+        target_encoder_gray = copy.deepcopy(self.online_encoder_gray)
+        set_requires_grad(target_encoder_gray, False)
+        return target_encoder_gray
 
-    def reset_moving_average(self):
-        del self.target_encoder
-        self.target_encoder = None
+    def reset_moving_average_rgb(self):
+        del self.target_encoder_rgb
+        self.target_encoder_rgb = None
 
-    def update_moving_average(self):
-        assert self.target_encoder is not None, 'target encoder has not been created yet'
-        update_moving_average(self.target_ema_updater, self.target_encoder, self.online_encoder)
+    def update_moving_average_rgb(self):
+        assert self.target_encoder_rgb is not None, 'target encoder_rgb has not been created yet'
+        update_moving_average(self.target_ema_updater_rgb, self.target_encoder_rgb, self.online_encoder_rgb)
+
+    def reset_moving_average_range(self):
+        del self.target_encoder_gray
+        self.target_encoder_gray = None
+
+    def update_moving_average_range(self):
+        assert self.target_encoder_gray is not None, 'target encoder_range has not been created yet'
+        update_moving_average(self.target_ema_updater_range, self.target_encoder_gray, self.online_encoder_gray)
 
     def forward(self, x, return_positive_pairs=False):
-        cropped_points = False
+        range_view = False
 
         if isinstance(x, dict):
-            if "cropped_points" in x:
-                cropped_points = x['cropped_points']
+            range_view = x['range_view']
             x = x['image']
 
         shape, device, prob_flip = x.shape, x.device, self.prob_rand_hflip
@@ -391,27 +445,33 @@ class PixelCL(nn.Module):
 
         image_one_cutout = cutout_and_resize(x, cutout_coordinates_one, mode=self.cutout_interpolate_mode)
         image_two_cutout = cutout_and_resize(x, cutout_coordinates_two, mode=self.cutout_interpolate_mode)
-        if cropped_points:
-            cropped_points_one_cutout = cutout_and_resize(cropped_points, cutout_coordinates_one, mode=self.cutout_interpolate_mode)
-            cropped_points_two_cutout = cutout_and_resize(cropped_points, cutout_coordinates_two, mode=self.cutout_interpolate_mode)
-            cropped_points_one_cutout = flip_image_one_fn(cropped_points_one_cutout)
-            cropped_points_two_cutout = flip_image_two_fn(cropped_points_two_cutout)
+
+        range_view_one_cutout = cutout_and_resize(range_view, cutout_coordinates_one,
+                                                  mode=self.cutout_interpolate_mode)
+        range_view_two_cutout = cutout_and_resize(range_view, cutout_coordinates_two,
+                                                  mode=self.cutout_interpolate_mode)
+        range_view_one_cutout = flip_image_one_fn(range_view_one_cutout)
+        range_view_two_cutout = flip_image_two_fn(range_view_two_cutout)
 
         image_one_cutout = flip_image_one_fn(image_one_cutout)
         image_two_cutout = flip_image_two_fn(image_two_cutout)
 
-        image_one_cutout_tmp, image_two_cutout_tmp = self.augment1(image_one_cutout[:, :3]), self.augment2(image_two_cutout[:, :3])
+        image_one_cutout_tmp, image_two_cutout_tmp = self.augment1(image_one_cutout[:, :3]), self.augment2(
+            image_two_cutout[:, :3])
         #  we don't apply augments to the intensity points as they pertain only to color
 
         image_one_cutout[:, :3] = image_one_cutout_tmp
         image_two_cutout[:, :3] = image_two_cutout_tmp
 
-        proj_pixel_one, proj_instance_one = self.online_encoder(image_one_cutout)
-        proj_pixel_two, proj_instance_two = self.online_encoder(image_two_cutout)
+        proj_pixel_one_rgb, proj_instance_one_rgb = self.online_encoder_rgb(image_one_cutout)
+        proj_pixel_two_rgb, proj_instance_two_rgb = self.online_encoder_rgb(image_two_cutout)
+
+        proj_pixel_one_range, proj_instance_one_range = self.online_encoder_gray(range_view_one_cutout)
+        proj_pixel_two_range, proj_instance_two_range = self.online_encoder_gray(range_view_two_cutout)
 
         image_h, image_w = shape[2:]
 
-        proj_image_shape = proj_pixel_one.shape[2:]
+        proj_image_shape = proj_pixel_one_rgb.shape[2:]
         proj_image_h, proj_image_w = proj_image_shape
 
         coordinates = torch.meshgrid(
@@ -450,16 +510,22 @@ class PixelCL(nn.Module):
         positive_mask_two_one = positive_mask_one_two.t()
 
         with torch.no_grad():
-            target_encoder = self._get_target_encoder()
-            target_proj_pixel_one, target_proj_instance_one = target_encoder(image_one_cutout)
-            target_proj_pixel_two, target_proj_instance_two = target_encoder(image_two_cutout)
+            target_encoder_rgb = self._get_target_encoder_rgb()
+            target_proj_pixel_one_rgb, target_proj_instance_one_rgb = target_encoder_rgb(image_one_cutout)
+            target_proj_pixel_two_rgb, target_proj_instance_two_rgb = target_encoder_rgb(image_two_cutout)
+            target_encoder_gray = self._get_target_encoder_gray()
+            target_proj_pixel_one_range, target_proj_instance_one_range = target_encoder_gray(range_view_one_cutout)
+            target_proj_pixel_two_range, target_proj_instance_two_range = target_encoder_gray(range_view_two_cutout)
 
         # flatten all the pixel projections
 
         flatten = lambda t: rearrange(t, 'b c h w -> b c (h w)')
 
-        target_proj_pixel_one, target_proj_pixel_two = list(
-            map(flatten, (target_proj_pixel_one, target_proj_pixel_two)))
+        target_proj_pixel_one_rgb, target_proj_pixel_two_rgb = list(
+            map(flatten, (target_proj_pixel_one_rgb, target_proj_pixel_two_rgb)))
+
+        target_proj_pixel_one_range, target_proj_pixel_two_range = list(
+            map(flatten, (target_proj_pixel_one_range, target_proj_pixel_two_range)))
 
         # get total number of positive pixel pairs
 
@@ -467,13 +533,14 @@ class PixelCL(nn.Module):
 
         # get instance level loss
 
-        pred_instance_one = self.online_predictor(proj_instance_one)
-        pred_instance_two = self.online_predictor(proj_instance_two)
+        pred_instance_one = self.online_predictor_rgb(proj_instance_one_rgb + proj_instance_one_range)
+        pred_instance_two = self.online_predictor_rgb(proj_instance_two_rgb + proj_instance_two_range)
 
-        loss_instance_one = loss_fn(pred_instance_one, target_proj_instance_two.detach())
-        loss_instance_two = loss_fn(pred_instance_two, target_proj_instance_one.detach())
+        loss_instance_one = loss_fn(pred_instance_one, target_proj_instance_two_rgb.detach())
+        loss_instance_two = loss_fn(pred_instance_two, target_proj_instance_one_rgb.detach())
 
         instance_loss = (loss_instance_one + loss_instance_two).mean()
+        # instance_loss_range = (loss_instance_one_range + loss_instance_two_range).mean()
 
         if positive_pixel_pairs == 0:
             ret = (instance_loss, 0) if return_positive_pairs else instance_loss
@@ -482,37 +549,51 @@ class PixelCL(nn.Module):
         if not self.use_pixpro:
             # calculate pix contrast loss
 
-            proj_pixel_one, proj_pixel_two = list(map(flatten, (proj_pixel_one, proj_pixel_two)))
+            proj_pixel_one_rgb, proj_pixel_two_rgb = list(map(flatten, (proj_pixel_one_rgb, proj_pixel_two_rgb)))
 
-            similarity_one_two = F.cosine_similarity(proj_pixel_one[..., :, None], target_proj_pixel_two[..., None, :],
-                                                     dim=1) / self.similarity_temperature
-            similarity_two_one = F.cosine_similarity(proj_pixel_two[..., :, None], target_proj_pixel_one[..., None, :],
-                                                     dim=1) / self.similarity_temperature
+            similarity_one_two_rgb = F.cosine_similarity(proj_pixel_one_rgb[..., :, None],
+                                                         target_proj_pixel_two_rgb[..., None, :],
+                                                         dim=1) / self.similarity_temperature
+            similarity_two_one_rgb = F.cosine_similarity(proj_pixel_two_rgb[..., :, None],
+                                                         target_proj_pixel_one_rgb[..., None, :],
+                                                         dim=1) / self.similarity_temperature
+
+            proj_pixel_one_range, proj_pixel_two_range = list(map(flatten, (proj_pixel_one_range, proj_pixel_two_range)))
+
+            similarity_one_two_range = F.cosine_similarity(proj_pixel_one_range[..., :, None],
+                                                          target_proj_pixel_two_range[..., None, :],
+                                                          dim=1) / self.similarity_temperature
+            similarity_two_one_range = F.cosine_similarity(proj_pixel_two_range[..., :, None],
+                                                          target_proj_pixel_one_range[..., None, :],
+                                                          dim=1) / self.similarity_temperature
 
             loss_pix_one_two = -torch.log(
-                similarity_one_two.masked_select(positive_mask_one_two[None, ...]).exp().sum() /
-                similarity_one_two.exp().sum()
+                similarity_one_two_rgb.masked_select(positive_mask_one_two[None, ...]).exp().sum() /
+                similarity_one_two_rgb.exp().sum()
             )
 
             loss_pix_two_one = -torch.log(
-                similarity_two_one.masked_select(positive_mask_two_one[None, ...]).exp().sum() /
-                similarity_two_one.exp().sum()
+                similarity_two_one_rgb.masked_select(positive_mask_two_one[None, ...]).exp().sum() /
+                similarity_two_one_rgb.exp().sum()
             )
 
             pix_loss = (loss_pix_one_two + loss_pix_two_one) / 2
         else:
             # calculate pix pro loss
 
-            propagated_pixels_one = self.propagate_pixels(proj_pixel_one)
-            propagated_pixels_two = self.propagate_pixels(proj_pixel_two)
+            propagated_pixels_one = self.propagate_pixels(proj_pixel_one_rgb + proj_pixel_one_range)
+            propagated_pixels_two = self.propagate_pixels(proj_pixel_two_rgb + proj_pixel_two_range)
 
             propagated_pixels_one, propagated_pixels_two = list(
                 map(flatten, (propagated_pixels_one, propagated_pixels_two)))
 
+            target_sum_two = target_proj_pixel_two_rgb[..., None, :] + target_proj_pixel_two_range[..., None, :]
+            target_sum_one = target_proj_pixel_one_rgb[..., None, :] + target_proj_pixel_one_range[..., None, :]
+
             propagated_similarity_one_two = F.cosine_similarity(propagated_pixels_one[..., :, None],
-                                                                target_proj_pixel_two[..., None, :], dim=1)
+                                                                target_sum_two, dim=1)
             propagated_similarity_two_one = F.cosine_similarity(propagated_pixels_two[..., :, None],
-                                                                target_proj_pixel_one[..., None, :], dim=1)
+                                                                target_sum_one, dim=1)
 
             loss_pixpro_one_two = - propagated_similarity_one_two.masked_select(positive_mask_one_two[None, ...]).mean()
             loss_pixpro_two_one = - propagated_similarity_two_one.masked_select(positive_mask_two_one[None, ...]).mean()

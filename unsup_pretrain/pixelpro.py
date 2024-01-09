@@ -1,10 +1,12 @@
 import torch
 import pytorch_lightning as pl
 from pixel_level_contrastive_learning.pixel_level_contrastive_learning import PixelCL
+from pixel_level_contrastive_learning.pixel_level_contrastive_learning_DB import PixelCL_DB
 from torchvision import models
 from pytorch_lightning.callbacks import ModelCheckpoint
 from torch.utils.data import DataLoader
-from unsup_pretrain.data_loading.NuScenes import NuScenes
+# from data_loading.NuScenes import NuScenes
+from data_loading.Kitti_DB import KittiRangeDataset
 import click
 
 
@@ -47,11 +49,11 @@ class LightningPixelCL(pl.LightningModule):
 @click.option('--batch_size',
               '-b',
               help='batch size',
-              default=2)
+              default=4)
 @click.option('--num_workers',
               '-nw',
               help='number of workers for data loading (tentative equal to cpu cores)',
-              default=12)
+              default=10)
 @click.option('--gpus',
               '-g',
               help='number of gpus to be used',
@@ -59,13 +61,14 @@ class LightningPixelCL(pl.LightningModule):
 def main(data_path, extra, checkpoint, batch_size, num_workers, gpus):
     resnet = models.segmentation.fcn_resnet50(pretrained=False, progress=True, num_classes=20,
                                               aux_loss=None)
-    resnet.backbone.conv1 = torch.nn.Conv2d(4, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
-    data_path = "/home/matt/data/nuScenes/"
+    # resnet.backbone.conv1 = torch.nn.Conv2d(4, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
+    data_path = "/home/matt/data/kitti_sem/"
+    checkpoint = "checkpoints/pixpro_range_kitti_full.ckpt"
     # city_data_path = os.path.join(data_path, 'cityscapes/')
 
     # extra = False
 
-    learner = PixelCL(
+    learner = PixelCL_DB(
         resnet,
         image_size=[90, 160],
         hidden_layer_pixel='classifier',  # leads to output of 8x8 feature map for pixel-level learning
@@ -89,10 +92,10 @@ def main(data_path, extra, checkpoint, batch_size, num_workers, gpus):
 
     model = LightningPixelCL(learner, opt)
 
-    checkpoint_callback = ModelCheckpoint(dirpath="checkpoints", save_top_k=2, monitor="loss", save_last=True,
+    checkpoint_callback = ModelCheckpoint(dirpath="checkpoints", save_top_k=2, monitor="loss",
                                           every_n_epochs=50)
 
-    trainer = pl.Trainer(devices=gpus, callbacks=[checkpoint_callback], max_epochs=500)
+    trainer = pl.Trainer(devices=gpus, callbacks=[checkpoint_callback], max_epochs=200)
 
     if extra:
         split_train = 'train_extra'
@@ -103,7 +106,7 @@ def main(data_path, extra, checkpoint, batch_size, num_workers, gpus):
 
     # train_data = nataPixel(city_data_path, split=split_train, mode=mode, target_type='semantic', transforms=None)
     # val_data = CityDataPixel(city_data_path, split='val', mode=mode, target_type='semantic', transforms=None)
-    train_data = NuScenes(data_source=data_path)
+    train_data = KittiRangeDataset(root_dir=data_path, split="train")
     # val_data = NuScenes()
 
     batch_size = batch_size
@@ -113,7 +116,7 @@ def main(data_path, extra, checkpoint, batch_size, num_workers, gpus):
                 # DataLoader(val_data, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True, drop_last=True),
                 ckpt_path=checkpoint)
 
-    # trainer.save_checkpoint("checkpoints/pixpro_range_final.ckpt")
+    trainer.save_checkpoint("pixpro_range_kitti_full.ckpt")
 
 
 if __name__ == '__main__':

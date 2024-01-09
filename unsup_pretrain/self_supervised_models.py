@@ -22,7 +22,7 @@ from sklearn.linear_model import LogisticRegression
 import numpy as np
 
 import os
-from unsup_pretrain.data_loading.data_loading import CityDataContrastive
+from data_loading.data_loading import CityDataContrastive
 from collections import OrderedDict
 from matplotlib import pyplot as plt
 

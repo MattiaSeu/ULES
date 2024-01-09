@@ -46,7 +46,7 @@ def main(config, weights, checkpoint, data_ratio, gpus, only_bb):
     torch.manual_seed(cfg['experiment']['seed'])
     # use the comment block below if you don't plan on using command line
     # data_ratio = 10
-    # weights = 'checkpoints/pixpro_range_final.ckpt'
+    weights = 'checkpoints/db_semantic_only.ckpt'
     use_range_image = True
 
     # Load data and model
@@ -127,7 +127,7 @@ def main(config, weights, checkpoint, data_ratio, gpus, only_bb):
 
     # Add callbacks:
     if cfg['train']['mode'] == "train":
-        version_name = "no_pt_" if weights is None else "ft_"
+        version_name = "db_no_pt_" if weights is None else "db_ft_"
         version_name = version_name + str(data_ratio) + "%"
     elif cfg['train']['mode'] == "eval":
         version_split = checkpoint.replace("checkpoints/", "")

@@ -1,21 +1,15 @@
 import copy
-
-import PIL.ImageOps
-from torchvision.datasets import Cityscapes
-import os
 import random
-from matplotlib import pyplot as plt
-from PIL import Image
-import numpy as np
-import torch
-import torch.nn as nn
-from PIL import ImageFilter
-from torchvision import transforms
-from ..transforms_custom import RandomCropWithCoord, RandomFlipWithReturn, RandomSizeCropWithCoord
-from PIL import ImageOps
+from typing import Any, Tuple
 
-from typing import Any, Callable, Dict, List, Optional, Union, Tuple
+import torch
+from PIL import Image
+from PIL import ImageFilter
+from PIL import ImageOps
+from torchvision import transforms
 from torchvision.datasets import Cityscapes
+
+from transforms_custom import RandomFlipWithReturn, RandomSizeCropWithCoord
 
 
 class GaussianBlur(object):

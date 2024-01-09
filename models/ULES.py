@@ -59,7 +59,7 @@ class Ules(LightningModule):
 
         self.model = torchvision.models.segmentation.fcn_resnet50(pretrained=False, progress=True, num_classes=self.n_classes,
                                                                   aux_loss=None)
-        self.model.backbone.conv1 = torch.nn.Conv2d(4, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
+        # self.model.backbone.conv1 = torch.nn.Conv2d(4, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
 
     def forward(self, input):
         out = self.model(input)
