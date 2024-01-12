@@ -104,16 +104,17 @@ def main(data_path, extra, checkpoint, batch_size, num_workers, gpus):
         split_train = 'train'
         mode = 'fine'
 
-    # train_data = nataPixel(city_data_path, split=split_train, mode=mode, target_type='semantic', transforms=None)
+    # train_data = CityDataPixel(city_data_path, split=split_train, mode=mode, target_type='semantic', transforms=None)
     # val_data = CityDataPixel(city_data_path, split='val', mode=mode, target_type='semantic', transforms=None)
     train_data = KittiRangeDataset(root_dir=data_path, split="train")
+    val_data = KittiRangeDataset(root_dir=data_path, split="test")
     # val_data = NuScenes()
 
     batch_size = batch_size
 
     trainer.fit(model,
                 DataLoader(train_data, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True, drop_last=True),
-                # DataLoader(val_data, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True, drop_last=True),
+                DataLoader(val_data, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True, drop_last=True),
                 ckpt_path=checkpoint)
 
     trainer.save_checkpoint("pixpro_range_kitti_full.ckpt")

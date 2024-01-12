@@ -8,6 +8,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 import yaml
 from datasets.datasets import StatDataModule
 from models.ULES import Ules as ULES
+from models.ULES_DB import Ules as ULES_DB
 
 
 @click.command()
@@ -35,27 +36,37 @@ from models.ULES import Ules as ULES
               '-g',
               help='number of gpus to be used',
               default=1)
-@click.option('--only_bb',
-              '-bb',
-              is_flag=True,
+@click.option('--only_bb/--bb+head',
               show_default=True,
               help='if triggered, load all state dict, otherwise just backbone',
               default=True)
-def main(config, weights, checkpoint, data_ratio, gpus, only_bb):
+@click.option('--rgb_only_ft/--full_ft',
+              show_default=True,
+              help='use to fine tune on rgb only if using a double backbone',
+              default=False)
+@click.option('--double_backbone/--single_backbone',
+              show_default=True,
+              help='if triggered, use double backbone',
+              default=True)
+
+def main(config, weights, checkpoint, data_ratio, gpus, only_bb, rgb_only_ft, double_backbone):
     cfg = yaml.safe_load(open(config))
     torch.manual_seed(cfg['experiment']['seed'])
     # use the comment block below if you don't plan on using command line
     # data_ratio = 10
-    weights = 'checkpoints/db_semantic_only.ckpt'
-    use_range_image = True
+    # weights = 'checkpoints/pixpro_range_kitti_full_50epochs.ckpt'
+    # rgb_only_ft = True
+    # double_backbone = False
+
 
     # Load data and model
     data = StatDataModule(cfg, data_ratio)
-
-    if weights is None:
-        model = ULES(cfg)
+    if double_backbone:
+        model = ULES_DB(cfg)
     else:
         model = ULES(cfg)
+
+    if weights:
         checkpoint = torch.load(weights)
         state_dict = checkpoint["state_dict"]
         loopable_state_dict = dict(state_dict)
@@ -70,11 +81,13 @@ def main(config, weights, checkpoint, data_ratio, gpus, only_bb):
                 state_dict[new_k] = state_dict.pop(k)
         loopable_state_dict = dict(state_dict)
 
+        # remove an unused key
         for k in loopable_state_dict.keys():
             if k.endswith("num_batches_tracked"):
                 del state_dict[k]
         loopable_state_dict = dict(state_dict)
 
+        # all these following loops are to adapt the key names to our architecture
         for k in loopable_state_dict.keys():
             k_str = str(k)
             k_split = k_str.split(sep=".")
@@ -99,20 +112,43 @@ def main(config, weights, checkpoint, data_ratio, gpus, only_bb):
                 state_dict[new_k] = state_dict.pop(k)
         loopable_state_dict = dict(state_dict)
 
+        for k in loopable_state_dict.keys():
+            if k.startswith("model.online_encoder_rgb"):
+                new_k = k.replace("model.online_encoder_rgb.net.backbone.", "model.backbone_rgb.")
+                state_dict[new_k] = state_dict.pop(k)
+        loopable_state_dict = dict(state_dict)
+
+        # in the pretraining arch I decided to call the range view backbone "gray" because it was a grayscale image
+        # in the end they are brought back to a specific color space anyway, so I decided to use "range" here
+        for k in loopable_state_dict.keys():
+            if k.startswith("model.online_encoder_gray"):
+                new_k = k.replace("model.online_encoder_gray.net.backbone.", "model.backbone_range.")
+                state_dict[new_k] = state_dict.pop(k)
+        loopable_state_dict = dict(state_dict)
+
+        # this block is to only use the rgb weights of the pretrained double backbone
+        if rgb_only_ft:
+            for k in loopable_state_dict.keys():
+                if k.startswith("model.backbone_rgb"):
+                    new_k = k.replace("model.backbone_rgb.", "model.backbone.")
+                    state_dict[new_k] = state_dict.pop(k)
+            loopable_state_dict = dict(state_dict)
+
         # remove everything that isn't backbone
         if only_bb:
             for k in loopable_state_dict.keys():
-                if not k.startswith("model.backbone"):
+                # if not k.startswith("model.backbone"):
+                if not "backbone" in k:
                     del state_dict[k]
         loopable_state_dict = dict(state_dict)
 
         # remove the first layer if we're only using the image for image+range pretraining
-        if use_range_image:
-            for k in loopable_state_dict.keys():
-                if k.startswith("model.backbone.conv1"):
-                    del state_dict[k]
+        # if range_pt:
+        #     for k in loopable_state_dict.keys():
+        #         if k.startswith("model.backbone.conv1"):
+        #             del state_dict[k]
 
-        odd_keys = model.load_state_dict(state_dict, strict=False) # stores mismatching keys for warning
+        odd_keys = model.load_state_dict(state_dict, strict=False)  # stores mismatching keys for warning
         # warn the user of mismatching keys
         if len(odd_keys[0]) > 1:
             print("The following keys are missing:")
@@ -127,7 +163,12 @@ def main(config, weights, checkpoint, data_ratio, gpus, only_bb):
 
     # Add callbacks:
     if cfg['train']['mode'] == "train":
-        version_name = "db_no_pt_" if weights is None else "db_ft_"
+        if double_backbone:
+            version_name = "db_no_pt_" if weights is None else "db_ft_"
+        elif not double_backbone and not rgb_only_ft:
+            version_name = "sb_no_pt_" if weights is None else "sb_ft_"
+        elif not double_backbone and rgb_only_ft:
+            version_name = "sb_ft_range_"
         version_name = version_name + str(data_ratio) + "%"
     elif cfg['train']['mode'] == "eval":
         version_split = checkpoint.replace("checkpoints/", "")
@@ -138,12 +179,12 @@ def main(config, weights, checkpoint, data_ratio, gpus, only_bb):
             version_name = "test_ft_" + version_split[1]
 
     tb_logger = pl_loggers.TensorBoardLogger(save_dir=os.getcwd(), name='experiments/',
-                                             version=version_name + "_range", default_hp_metric=False)
+                                             version=version_name, default_hp_metric=False)
 
     # Setup trainer
     checkpoint_callback = ModelCheckpoint(dirpath="checkpoints",
                                           filename="{epoch}-%s_range_final.ckpt" % version_name,
-                                          save_top_k=1, monitor="sem_loss")
+                                          monitor="sem_loss")
 
     trainer = Trainer(devices=gpus,
                       logger=tb_logger,
@@ -152,7 +193,7 @@ def main(config, weights, checkpoint, data_ratio, gpus, only_bb):
     # Train
     if cfg['train']['mode'] == "train":
         trainer.fit(model, datamodule=data)  # .ckpt_path=checkpoint)
-        trainer.save_checkpoint("checkpoints/%s_range_final.ckpt" % version_name)
+        trainer.save_checkpoint("checkpoints/%s.ckpt" % version_name)
     elif cfg['train']['mode'] == "eval":
         trainer.test(model, ckpt_path=checkpoint, datamodule=data)
 
