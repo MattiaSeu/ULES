@@ -1,6 +1,7 @@
 import torch
 import yaml
 import torchvision
+from pytorch_lightning.utilities.types import EVAL_DATALOADERS
 from torchvision.datasets import Cityscapes
 from torch.utils.data import Dataset, DataLoader, RandomSampler, Subset
 from pytorch_lightning import LightningDataModule
@@ -29,7 +30,7 @@ class StatDataModule(LightningDataModule):
         self.data_ratio = reduced_data
         self.len = -1
         self.setup()
-        self.loader = [self.train_dataloader(), self.val_dataloader(), self.test_dataloader()]
+        self.loader = [self.train_dataloader(), self.val_dataloader(), self.test_dataloader(), self.predict_dataloader()]
 
     def prepare_data(self):
         # Augmentations are applied using self.transform 
@@ -55,6 +56,10 @@ class StatDataModule(LightningDataModule):
             if stage == 'fit' or stage is None:
                 self.data_train = KittiRangeDataset_DB(self.cfg['data']['ft-path'], split='train')
                 self.data_val = KittiRangeDataset_DB(self.cfg['data']['ft-path'], split='test')
+        elif "ipb" in self.cfg['data']['ft-path']:
+            if stage == 'fit' or stage is None:
+                self.data_train = IPB_Car(self.cfg['data']['ft-path'])
+                self.data_val = IPB_Car(self.cfg['data']['ft-path'])
         return
 
     def train_dataloader(self):
@@ -90,6 +95,16 @@ class StatDataModule(LightningDataModule):
                             pin_memory=True,
                             shuffle=False)
         self.len = self.data_test.__len__()
+        return loader
+
+    def predict_dataloader(self):
+        if self.mode != "infer": return
+        loader = DataLoader(self.data_train,
+                            self.cfg['train']['batch_size'] // self.cfg['train']['n_gpus'],
+                            num_workers=self.cfg['train']['workers'],
+                            pin_memory=True,
+                            shuffle=False)
+        self.len = self.data_train.__len__()
         return loader
 
 
@@ -208,6 +223,44 @@ class KittiRangeDataset(Dataset):
         range_view = range_view[1]
         range_view = range_view[None, :, :]
         sample = {"image": torch.cat((image, range_view), 0), "target": target.type(torch.int64)}
+
+        return sample
+
+
+class IPB_Car(Dataset):
+
+    def __init__(self, root_dir: str, transform=None):
+        """
+        Arguments:.
+            root_dir (string): Directory with all the images.
+            transform (callable, optional): Optional transform to be applied
+                on a sample.
+        """
+        self.root_dir = os.path.join(root_dir)
+        self.transform = transform
+        self.image_list = os.listdir(self.root_dir)
+
+    def __len__(self):
+        return len(self.image_list)
+
+    def __getitem__(self, idx):
+        if torch.is_tensor(idx):
+            idx = idx.tolist()
+
+        img_path = os.path.join(self.root_dir, self.image_list[idx])
+
+        image = Image.open(img_path).convert('RGB')
+
+        transform_image = transforms.Compose(
+            [
+                transforms.Resize((90, 160), transforms.InterpolationMode.BILINEAR),
+                transforms.ToTensor(),
+            ]
+        )
+
+        image = transform_image(image)
+
+        sample = {"image": image}
 
         return sample
 

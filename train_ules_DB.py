@@ -20,7 +20,8 @@ from models.ULES_DB import Ules as ULES_DB
 @click.option('--weights',
               '-w',
               type=str,
-              help='path to pretrained weights (.ckpt). Use this flag if you just want to load the weights from the checkpoint file without resuming training',
+              help='path to pretrained weights (.ckpt). Use this flag if you just want to load the weights '
+                   'from the checkpoint file without resuming training',
               default=None)
 @click.option('--checkpoint',
               '-ckpt',
@@ -48,21 +49,20 @@ from models.ULES_DB import Ules as ULES_DB
               show_default=True,
               help='if triggered, use double backbone',
               default=True)
-
 def main(config, weights, checkpoint, data_ratio, gpus, only_bb, rgb_only_ft, double_backbone):
     cfg = yaml.safe_load(open(config))
     torch.manual_seed(cfg['experiment']['seed'])
     # use the comment block below if you don't plan on using command line
     # data_ratio = 10
-    # weights = 'checkpoints/pixpro_range_kitti_full_50epochs.ckpt'
-    # rgb_only_ft = True
-    # double_backbone = False
-
+    # weights = 'checkpoints/pixpro_kitti_range_full_50epochs.ckpt'
+    weights = 'checkpoints/db_ft_100%.ckpt'
+    rgb_only_ft = True
+    double_backbone = True
 
     # Load data and model
     data = StatDataModule(cfg, data_ratio)
     if double_backbone:
-        model = ULES_DB(cfg)
+        model = ULES_DB(cfg, rgb_only_ft)
     else:
         model = ULES(cfg)
 
@@ -127,7 +127,7 @@ def main(config, weights, checkpoint, data_ratio, gpus, only_bb, rgb_only_ft, do
         loopable_state_dict = dict(state_dict)
 
         # this block is to only use the rgb weights of the pretrained double backbone
-        if rgb_only_ft:
+        if rgb_only_ft and not double_backbone:
             for k in loopable_state_dict.keys():
                 if k.startswith("model.backbone_rgb"):
                     new_k = k.replace("model.backbone_rgb.", "model.backbone.")
@@ -163,12 +163,16 @@ def main(config, weights, checkpoint, data_ratio, gpus, only_bb, rgb_only_ft, do
 
     # Add callbacks:
     if cfg['train']['mode'] == "train":
-        if double_backbone:
+        if double_backbone and not rgb_only_ft:
             version_name = "db_no_pt_" if weights is None else "db_ft_"
+        elif double_backbone and rgb_only_ft:
+            if weights:
+                version_name = "db_ft_rgb_"
         elif not double_backbone and not rgb_only_ft:
             version_name = "sb_no_pt_" if weights is None else "sb_ft_"
         elif not double_backbone and rgb_only_ft:
-            version_name = "sb_ft_range_"
+            if weights:
+                version_name = "sb_ft_range_"
         version_name = version_name + str(data_ratio) + "%"
     elif cfg['train']['mode'] == "eval":
         version_split = checkpoint.replace("checkpoints/", "")
@@ -177,7 +181,10 @@ def main(config, weights, checkpoint, data_ratio, gpus, only_bb, rgb_only_ft, do
             version_name = "test_no_pt_" + version_split[2]
         elif len(version_split) == 3:
             version_name = "test_ft_" + version_split[1]
+    elif cfg['train']['mode'] == "infer":
+        version_name = "infer_db_ft"
 
+    version_name = "trial"
     tb_logger = pl_loggers.TensorBoardLogger(save_dir=os.getcwd(), name='experiments/',
                                              version=version_name, default_hp_metric=False)
 
@@ -196,6 +203,9 @@ def main(config, weights, checkpoint, data_ratio, gpus, only_bb, rgb_only_ft, do
         trainer.save_checkpoint("checkpoints/%s.ckpt" % version_name)
     elif cfg['train']['mode'] == "eval":
         trainer.test(model, ckpt_path=checkpoint, datamodule=data)
+    elif cfg['train']['mode'] == "infer":
+        predictions = trainer.predict(model, datamodule=data)
+        print(predictions)
 
 
 if __name__ == "__main__":

@@ -109,18 +109,18 @@ def kitti_encode(color_kitti_labels):
 
 def kitti_decode(gray_encode):
     kitti_colors_list = [
-        [0, 0, 0],
-        [128, 0, 0],
-        [128, 64, 128],
-        [0, 0, 192],
-        [64, 64, 128],
-        [128, 128, 0],
-        [192, 192, 128],
-        [64, 0, 128],
-        [192, 128, 128],
-        [64, 64, 0],
-        [0, 128, 192],
-        [128, 128, 128],
+        [0, 0, 0],        # ignore
+        [128, 0, 0],      # building
+        [128, 64, 128],   # road
+        [0, 0, 192],      # sidewalk
+        [64, 64, 128],    # fence
+        [128, 128, 0],    # vegetation
+        [192, 192, 128],  # pole
+        [64, 0, 128],     # car
+        [192, 128, 128],  # sign
+        [64, 64, 0],      # pedestrian
+        [0, 128, 192],    # cyclist
+        [128, 128, 128],  # sky
     ]
 
     label_colours = dict(zip(range(12), kitti_colors_list))
