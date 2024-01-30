@@ -42,7 +42,7 @@ from models.ULES_DB import Ules as ULES_DB
               help='if triggered, load all state dict, otherwise just backbone',
               default=True)
 @click.option('--rgb_only_ft/--full_ft',
-              show_default=True,
+              show_default=False,
               help='use to fine tune on rgb only if using a double backbone',
               default=False)
 @click.option('--double_backbone/--single_backbone',
@@ -54,10 +54,10 @@ def main(config, weights, checkpoint, data_ratio, gpus, only_bb, rgb_only_ft, do
     torch.manual_seed(cfg['experiment']['seed'])
     # use the comment block below if you don't plan on using command line
     # data_ratio = 10
-    # weights = 'checkpoints/pixpro_kitti_range_full_50epochs.ckpt'
-    weights = 'checkpoints/db_ft_100%.ckpt'
-    rgb_only_ft = True
-    double_backbone = True
+    weights = 'checkpoints/pixpro_kitti_range_full_50epochs.ckpt'
+    # weights = 'checkpoints/db_ft_100%.ckpt'
+    # rgb_only_ft = False
+    # double_backbone = True
 
     # Load data and model
     data = StatDataModule(cfg, data_ratio)
@@ -184,7 +184,7 @@ def main(config, weights, checkpoint, data_ratio, gpus, only_bb, rgb_only_ft, do
     elif cfg['train']['mode'] == "infer":
         version_name = "infer_db_ft"
 
-    version_name = "trial"
+    version_name = "trial_100%"
     tb_logger = pl_loggers.TensorBoardLogger(save_dir=os.getcwd(), name='experiments/',
                                              version=version_name, default_hp_metric=False)
 

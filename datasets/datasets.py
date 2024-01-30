@@ -1,3 +1,5 @@
+import math
+
 import torch
 import yaml
 import torchvision
@@ -303,23 +305,37 @@ class KittiRangeDataset_DB(Dataset):
         range_view = Image.open(range_root + "/" + seq_name_list[0] + "/range_projection/" +
                            seq_name_list[1] + ".png").convert("LA")
 
+        og_size = image.size
+        # new_size = tuple(math.floor(s/4) for s in og_size)
+        new_size = (94, 310)
+        kitti_mean = (0.35095342, 0.36734804, 0.36330285)
+        kitti_std = (0.30601038, 0.31168418, 0.32000023)
+
         transform_image = transforms.Compose(
             [
-                transforms.Resize((90, 160), transforms.InterpolationMode.BILINEAR),
+                transforms.Resize(new_size, transforms.InterpolationMode.BILINEAR),
                 transforms.ToTensor(),
+                transforms.Normalize(mean=kitti_mean, std=kitti_std)
             ]
         )
 
         transform_range = transforms.Compose(
             [
-                transforms.Resize((90, 160), transforms.InterpolationMode.NEAREST),
+                transforms.Resize(new_size, transforms.InterpolationMode.BILINEAR),
+                transforms.ToTensor()
+            ]
+        )
+
+        transform_range = transforms.Compose(
+            [
+                transforms.Resize(new_size, transforms.InterpolationMode.NEAREST),
                 transforms.ToTensor(),
             ]
         )
 
         image = transform_image(image)
         target = transform_range(target).squeeze(0) * 255
-        range_view = transform_image(range_view)
+        range_view = transform_range(range_view)
 
         range_view = range_view[1]
         range_view = range_view[None, :, :]

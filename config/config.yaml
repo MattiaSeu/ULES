@@ -6,7 +6,7 @@ experiment:
 data:
 #    ft-path: "/home/matt/data_dummy/cityscapes/" # path to dataset for fine tuning
 #    ft-path: "/home/matt/data/ipb_car/2019-11-25_second_recording/images/"
-    ft-path: "/home/matt/data/kitti_sem/" # path to dataset for fine tuning
+    ft-path: "/home/matt/data/kitti_sem/"
 
 ##Training
 train:

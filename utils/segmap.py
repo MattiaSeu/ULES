@@ -109,7 +109,7 @@ def kitti_encode(color_kitti_labels):
 
 def kitti_decode(gray_encode):
     kitti_colors_list = [
-        [0, 0, 0],        # ignore
+        [255, 0, 0],        # ignore
         [128, 0, 0],      # building
         [128, 64, 128],   # road
         [0, 0, 192],      # sidewalk
