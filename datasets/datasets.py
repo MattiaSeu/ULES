@@ -307,7 +307,7 @@ class KittiRangeDataset_DB(Dataset):
 
         og_size = image.size
         # new_size = tuple(math.floor(s/4) for s in og_size)
-        new_size = (94, 310)
+        new_size = (90, 160)
         kitti_mean = (0.35095342, 0.36734804, 0.36330285)
         kitti_std = (0.30601038, 0.31168418, 0.32000023)
 

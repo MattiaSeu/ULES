@@ -54,8 +54,8 @@ def main(config, weights, checkpoint, data_ratio, gpus, only_bb, rgb_only_ft, do
     torch.manual_seed(cfg['experiment']['seed'])
     # use the comment block below if you don't plan on using command line
     # data_ratio = 10
+    # weights = 'checkpoints/pixpro_range_ar.ckpt'
     weights = 'checkpoints/pixpro_kitti_range_full_50epochs.ckpt'
-    # weights = 'checkpoints/db_ft_100%.ckpt'
     # rgb_only_ft = False
     # double_backbone = True
 
@@ -173,7 +173,8 @@ def main(config, weights, checkpoint, data_ratio, gpus, only_bb, rgb_only_ft, do
         elif not double_backbone and rgb_only_ft:
             if weights:
                 version_name = "sb_ft_range_"
-        version_name = version_name + str(data_ratio) + "%"
+        # version_name = version_name + str(data_ratio) + "%"
+        version_name = version_name + "trial_" + str(data_ratio) + "%"
     elif cfg['train']['mode'] == "eval":
         version_split = checkpoint.replace("checkpoints/", "")
         version_split = version_split.split("_")
@@ -184,7 +185,7 @@ def main(config, weights, checkpoint, data_ratio, gpus, only_bb, rgb_only_ft, do
     elif cfg['train']['mode'] == "infer":
         version_name = "infer_db_ft"
 
-    version_name = "trial_100%"
+    # version_name = "trial_100%"
     tb_logger = pl_loggers.TensorBoardLogger(save_dir=os.getcwd(), name='experiments/',
                                              version=version_name, default_hp_metric=False)
 
@@ -193,6 +194,7 @@ def main(config, weights, checkpoint, data_ratio, gpus, only_bb, rgb_only_ft, do
                                           filename="{epoch}-%s_range_final.ckpt" % version_name,
                                           monitor="sem_loss")
 
+    torch.set_float32_matmul_precision('high')
     trainer = Trainer(devices=gpus,
                       logger=tb_logger,
                       max_epochs=cfg['train']['max_epoch'],

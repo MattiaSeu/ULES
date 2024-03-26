@@ -332,7 +332,8 @@ class PixelCL_DB(nn.Module):
             augs.RandomGrayscale(p=0.2),
             RandomApply(filters.GaussianBlur2d((3, 3), (1.5, 1.5)), p=0.1),
             augs.RandomSolarize(p=0.5),
-            augs.Normalize(mean=torch.tensor([0.485, 0.456, 0.406]), std=torch.tensor([0.229, 0.224, 0.225]))
+            # augs.Normalize(mean=torch.tensor([0.485, 0.456, 0.406]), std=torch.tensor([0.229, 0.224, 0.225]))
+            augs.Normalize(mean=torch.tensor([0.288, 0.296, 0.299]), std=torch.tensor([0.285, 0.299, 0.311]))
         )
 
         self.augment1 = default(augment_fn, DEFAULT_AUG)
@@ -395,7 +396,11 @@ class PixelCL_DB(nn.Module):
             }
             self.forward(mock_dict)
         else:
-            self.forward(torch.randn(2, 3, image_size[0], image_size[1], device=device))
+            # self.forward(torch.randn(2, 3, image_size[0], image_size[1], device=device))
+            mock_dict = {
+                "image": torch.randn(2, 3, image_size[0], image_size[1], device=device),
+                "daolp": torch.randn(2, 3, image_size[0], image_size[1], device=device)
+            }
 
     @singleton_rgb('target_encoder_rgb')
     def _get_target_encoder_rgb(self):
@@ -429,8 +434,12 @@ class PixelCL_DB(nn.Module):
         range_view = False
 
         if isinstance(x, dict):
-            range_view = x['range_view']
-            x = x['image']
+            if self.use_range_view:
+                range_view = x['range_view']
+                x = x['image']
+            else:
+                range_view = x['daolp']
+                x = x['image']
 
         shape, device, prob_flip = x.shape, x.device, self.prob_rand_hflip
 

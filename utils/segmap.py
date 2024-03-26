@@ -78,7 +78,7 @@ def kitti_encode(color_kitti_labels):
         (192, 128, 128): 8,
         (64, 64, 0): 9,
         (0, 128, 192): 10,
-        (0, 0, 0): 0
+        (255, 0, 0): 0
     }
 
     temp = color_kitti_labels.cpu().numpy()
@@ -129,7 +129,7 @@ def kitti_decode(gray_encode):
     r = temp.copy()
     g = temp.copy()
     b = temp.copy()
-    for l in range(0, 12):
+    for l in range(0, 11):
         r[temp == l] = label_colours[l][0]
         g[temp == l] = label_colours[l][1]
         b[temp == l] = label_colours[l][2]

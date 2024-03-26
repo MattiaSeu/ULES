@@ -5,9 +5,10 @@ from PIL import Image
 from torchvision import transforms
 from torch.utils.data import Dataset
 
+
 class KittiRangeDataset(Dataset):
 
-    def __init__(self, root_dir, split: str, transform=None):
+    def __init__(self, root_dir, image_size, split: str, transform=None):
         """
         Arguments:.
             root_dir (string): Directory with all the images.
@@ -17,6 +18,7 @@ class KittiRangeDataset(Dataset):
         self.root_dir = os.path.join(root_dir, split)
         self.split = split
         self.transform = transform
+        self.image_size = image_size
         self.image_list = os.listdir(self.root_dir + "/rgb/")
 
     def __len__(self):
@@ -36,24 +38,23 @@ class KittiRangeDataset(Dataset):
 
         seq_name_list = self.image_list[idx].split(sep=".")[0].split(sep="_")
 
-
         # target_path = os.path.join(target_root, f"{seq_name_list[0]}_{seq_name_list[1]}.png")
 
         # target = Image.open(target_path).convert('L')
 
         range_view = Image.open(range_root + "/" + seq_name_list[0] + "/range_projection/" +
-                           seq_name_list[1] + ".png").convert("LA")
+                                seq_name_list[1] + ".png").convert("LA")
 
         transform_image = transforms.Compose(
             [
-                transforms.Resize((90, 160), transforms.InterpolationMode.BILINEAR),
+                transforms.Resize(((self.image_size[0], self.image_size[1])), transforms.InterpolationMode.BILINEAR),
                 transforms.ToTensor(),
             ]
         )
 
         transform_range = transforms.Compose(
             [
-                transforms.Resize((90, 160), transforms.InterpolationMode.NEAREST),
+                transforms.Resize(((self.image_size[0], self.image_size[1])), transforms.InterpolationMode.NEAREST),
                 transforms.ToTensor(),
             ]
         )
@@ -64,6 +65,6 @@ class KittiRangeDataset(Dataset):
 
         range_view = range_view[1]
         range_view = range_view[None, :, :]
-        sample = {"image": image, "range_view": range_view} #, "target": target.type(torch.int64)}
+        sample = {"image": image, "range_view": range_view}  # , "target": target.type(torch.int64)}
 
         return sample

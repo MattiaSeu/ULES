@@ -37,8 +37,8 @@ def segment_to_onehot(superpix_seg):
 
 config = join(dirname(abspath(__file__)), 'config/config.yaml')
 cfg = yaml.safe_load(open(config))
-model_full = ULES_DB.load_from_checkpoint("checkpoints/db_ft_100%.ckpt", cfg=cfg, rgb_only_ft=False)
-model_rgb = ULES_DB.load_from_checkpoint("checkpoints/db_ft_100%.ckpt", cfg=cfg, rgb_only_ft=True)
+model_full = ULES_DB.load_from_checkpoint("checkpoints/db_ft_trial_100%.ckpt", cfg=cfg, rgb_only_ft=False)
+model_rgb = ULES_DB.load_from_checkpoint("checkpoints/db_ft_trial_100%.ckpt", cfg=cfg, rgb_only_ft=True)
 
 rgb_only_ft = True
 double_backbone = False
@@ -75,15 +75,19 @@ rangedir = join("/home/matt/data/kitti_sem/test/", "sequences")
 for image_name in os.listdir(rootdir):
     seq_name_list = image_name.split(sep=".")[0].split(sep="_")
     range_name = seq_name_list[0] + "/range_projection/" + seq_name_list[1] + ".png"
+    label_name = "/home/matt/data/kitti_sem/test/labels/" + image_name
     image_og = PIL.Image.open(join(rootdir, image_name))
     range_og = PIL.Image.open(join(rangedir, range_name)).convert("LA")
+    labels = PIL.Image.open(label_name)
     image_size = image_og.size
-    new_size = (310, 94)
+    # new_size = (310, 94)
+    new_size = (160, 90)
     # for i in range(6):
     # image_res = image_og.resize((image_size[0] // (i + 1), image_size[1] // (i + 1)))
     # range_res = range_og.resize((image_size[0] // (i + 1), image_size[1] // (i + 1)))
     image_res = image_og.resize((new_size))
     range_res = range_og.resize((new_size))
+    labels_res = labels.resize((new_size))
     image = transform(image_res)
     image_superpix = image.permute(1, 2, 0)
     image_superpix = image_superpix.numpy()
@@ -144,20 +148,20 @@ for image_name in os.listdir(rootdir):
         plt.figure(figsize=(xinch * 4, yinch * 1.5), dpi=96)
         fig, ax = plt.subplots(ncols=2, nrows=2)
         ax[0][0].imshow(image_res)
-        ax[0][1].imshow(decoded_out)
+        ax[0][1].imshow(labels_res)
         ax[1][0].imshow(decoded_full)
-        ax[1][1].imshow(new_decode)
+        ax[1][1].imshow(decoded_sb)
         ax[0][0].axis('off')
         ax[0][1].axis('off')
         ax[1][0].axis('off')
         ax[1][1].axis('off')
         ax[0][0].set_title('Input Image')
-        ax[0][1].set_title('Db rgb')
-        ax[1][0].set_title('Db full')
-        ax[1][1].set_title('superpixelled')
+        ax[0][1].set_title('Ground Truth')
+        ax[1][0].set_title('DB pred')
+        ax[1][1].set_title('SB pred')
 
 
-        # plt.savefig(join(os.getcwd(), f"output/kitti/spix/{image_name}"), bbox_inches = "tight", dpi=200)
+
         color_list = np.unique(decoded_full.reshape(-1, decoded_full.shape[2]), axis=0)
         kitti_colors_list = [
             [255, 0, 0],  # ignore
@@ -193,9 +197,10 @@ for image_name in os.listdir(rootdir):
         plt.tight_layout()
         plt.margins(x=0)
         plt.margins(y=0)
-        plt.show()
-        # plt.close()
-    if counter == 100:
-        break
-    else:
-        counter += 1
+        # plt.show()
+        plt.savefig(join(os.getcwd(), f"output/kitti/dice/{image_name}"), bbox_inches = "tight", dpi=200)
+        plt.close()
+    # if counter == 100:
+    #     break
+    # else:
+    #     counter += 1

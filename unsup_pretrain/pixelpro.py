@@ -49,7 +49,7 @@ class LightningPixelCL(pl.LightningModule):
 @click.option('--batch_size',
               '-b',
               help='batch size',
-              default=4)
+              default=2)
 @click.option('--num_workers',
               '-nw',
               help='number of workers for data loading (tentative equal to cpu cores)',
@@ -59,18 +59,20 @@ class LightningPixelCL(pl.LightningModule):
               help='number of gpus to be used',
               default=1)
 def main(data_path, extra, checkpoint, batch_size, num_workers, gpus):
-    resnet = models.segmentation.fcn_resnet50(pretrained=False, progress=True, num_classes=20,
+    resnet = models.segmentation.fcn_resnet50(pretrained=False, progress=True, num_classes=12,
                                               aux_loss=None)
     # resnet.backbone.conv1 = torch.nn.Conv2d(4, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
-    data_path = "/home/matt/data/kitti_sem/"
-    checkpoint = "checkpoints/pixpro_range_kitti_full.ckpt"
+    data_path = "/home/matt/data/multimodal_dataset/"
+    # checkpoint = "checkpoints/pixpro_range_ar4 .ckpt"
     # city_data_path = os.path.join(data_path, 'cityscapes/')
 
     # extra = False
-
+    # image_size = [76, 248]
+    # image_size = [90, 160]
+    image_size = [256, 306]
     learner = PixelCL_DB(
         resnet,
-        image_size=[90, 160],
+        image_size=image_size,
         hidden_layer_pixel='classifier',  # leads to output of 8x8 feature map for pixel-level learning
         hidden_layer_instance=-2,  # leads to output for instance-level learning
         projection_size=128,  # size of projection output, 256 was used in the paper
@@ -94,8 +96,8 @@ def main(data_path, extra, checkpoint, batch_size, num_workers, gpus):
 
     checkpoint_callback = ModelCheckpoint(dirpath="checkpoints", save_top_k=2, monitor="loss",
                                           every_n_epochs=50)
-
-    trainer = pl.Trainer(devices=gpus, callbacks=[checkpoint_callback], max_epochs=200)
+    torch.set_float32_matmul_precision('high')
+    trainer = pl.Trainer(devices=gpus, callbacks=[checkpoint_callback], max_epochs=200, accumulate_grad_batches=8)
 
     if extra:
         split_train = 'train_extra'
@@ -106,8 +108,8 @@ def main(data_path, extra, checkpoint, batch_size, num_workers, gpus):
 
     # train_data = CityDataPixel(city_data_path, split=split_train, mode=mode, target_type='semantic', transforms=None)
     # val_data = CityDataPixel(city_data_path, split='val', mode=mode, target_type='semantic', transforms=None)
-    train_data = KittiRangeDataset(root_dir=data_path, split="train")
-    val_data = KittiRangeDataset(root_dir=data_path, split="test")
+    train_data = KittiRangeDataset(root_dir=data_path, split="train", image_size=image_size)
+    val_data = KittiRangeDataset(root_dir=data_path, split="test", image_size=image_size)
     # val_data = NuScenes()
 
     batch_size = batch_size
@@ -117,7 +119,7 @@ def main(data_path, extra, checkpoint, batch_size, num_workers, gpus):
                 DataLoader(val_data, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True, drop_last=True),
                 ckpt_path=checkpoint)
 
-    trainer.save_checkpoint("pixpro_range_kitti_full.ckpt")
+    trainer.save_checkpoint("pixpro_range_ar.ckpt")
 
 
 if __name__ == '__main__':
