@@ -13,27 +13,28 @@ class_names = ['unlabelled', 'road', 'sidewalk', 'building', 'wall', 'fence', 'p
 class_map = dict(zip(valid_classes, range(len(valid_classes))))
 n_classes = len(valid_classes)
 
-colors = [[0, 0, 0],
-          [128, 64, 128],
-          [244, 35, 232],
-          [70, 70, 70],
-          [102, 102, 156],
-          [190, 153, 153],
-          [153, 153, 153],
-          [250, 170, 30],
-          [220, 220, 0],
-          [107, 142, 35],
-          [152, 251, 152],
-          [0, 130, 180],
-          [220, 20, 60],
-          [255, 0, 0],
-          [0, 0, 142],
-          [0, 0, 70],
-          [0, 60, 100],
-          [0, 80, 100],
-          [0, 0, 230],
-          [119, 11, 32],
-          ]
+colors = [
+    [0, 0, 0],
+    [128, 64, 128],
+    [244, 35, 232],
+    [70, 70, 70],
+    [102, 102, 156],
+    [190, 153, 153],
+    [153, 153, 153],
+    [250, 170, 30],
+    [220, 220, 0],
+    [107, 142, 35],
+    [152, 251, 152],
+    [0, 130, 180],
+    [220, 20, 60],
+    [255, 0, 0],
+    [0, 0, 142],
+    [0, 0, 70],
+    [0, 60, 100],
+    [0, 80, 100],
+    [0, 0, 230],
+    [119, 11, 32],
+]
 
 label_colours = dict(zip(range(n_classes), colors))
 
@@ -109,23 +110,64 @@ def kitti_encode(color_kitti_labels):
 
 def kitti_decode(gray_encode):
     kitti_colors_list = [
-        [255, 0, 0],        # ignore
-        [128, 0, 0],      # building
-        [128, 64, 128],   # road
-        [0, 0, 192],      # sidewalk
-        [64, 64, 128],    # fence
-        [128, 128, 0],    # vegetation
+        [255, 0, 0],  # ignore
+        [128, 0, 0],  # building
+        [128, 64, 128],  # road
+        [0, 0, 192],  # sidewalk
+        [64, 64, 128],  # fence
+        [128, 128, 0],  # vegetation
         [192, 192, 128],  # pole
-        [64, 0, 128],     # car
+        [64, 0, 128],  # car
         [192, 128, 128],  # sign
-        [64, 64, 0],      # pedestrian
-        [0, 128, 192],    # cyclist
+        [64, 64, 0],  # pedestrian
+        [0, 128, 192],  # cyclist
         [128, 128, 128],  # sky
     ]
 
     label_colours = dict(zip(range(12), kitti_colors_list))
 
     temp = gray_encode.numpy()
+    r = temp.copy()
+    g = temp.copy()
+    b = temp.copy()
+    for l in range(0, 11):
+        r[temp == l] = label_colours[l][0]
+        g[temp == l] = label_colours[l][1]
+        b[temp == l] = label_colours[l][2]
+
+    rgb = np.zeros((temp.shape[0], temp.shape[1], 3))
+    rgb[:, :, 0] = r / 255.0
+    rgb[:, :, 1] = g / 255.0
+    rgb[:, :, 2] = b / 255.0
+    return rgb
+
+
+def multi_mat_decode(encoded_input):
+    multi_mat_colors_list = [
+        [44, 160, 44],  # asphalt
+        [31, 119, 180],  # concrete
+        [255, 127, 14],  # metal
+        [214, 39, 40],  # road marking
+        [140, 86, 75],  # fabric, leather
+        [127, 127, 127],  # glass
+        [188, 189, 34],  # plaster
+        [255, 152, 150],  # plastic
+        [23, 190, 207],  # rubber
+        [174, 199, 232],  # sand
+        [196, 156, 148],  # gravel
+        [197, 176, 213],  # ceramic
+        [247, 182, 210],  # cobblestone
+        [199, 199, 199],  # brick
+        [219, 219, 141],  # grass
+        [158, 218, 229],  # wood
+        [57, 59, 121],  # leaf
+        [107, 110, 207],  # water
+        [156, 158, 222],  # human body
+        [99, 121, 57]  # sky
+    ]
+    label_colours = dict(zip(range(12), multi_mat_colors_list))
+
+    temp = encoded_input.numpy()
     r = temp.copy()
     g = temp.copy()
     b = temp.copy()

@@ -339,6 +339,7 @@ class PixelCL_DB(nn.Module):
         self.augment1 = default(augment_fn, DEFAULT_AUG)
         self.augment2 = default(augment_fn2, self.augment1)
         self.prob_rand_hflip = prob_rand_hflip
+        self.use_range_image = use_range_image
 
         self.online_encoder_rgb = NetWrapper(
             net=net,
@@ -349,7 +350,9 @@ class PixelCL_DB(nn.Module):
         )
 
         net_1ch = copy.deepcopy(net)
-        net_1ch.backbone.conv1 = torch.nn.Conv2d(1, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
+        if self.use_range_image:
+            net_1ch.backbone.conv1 = torch.nn.Conv2d(1, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
+
         self.online_encoder_gray = NetWrapper(
             net=net_1ch,
             projection_size=projection_size,
@@ -389,7 +392,7 @@ class PixelCL_DB(nn.Module):
         self.to(device)
 
         # send a mock image tensor to instantiate singleton parameters
-        if use_range_image:
+        if self.use_range_image:
             mock_dict = {
                 "image": torch.randn(2, 3, image_size[0], image_size[1], device=device),
                 "range_view": torch.randn(2, 1, image_size[0], image_size[1], device=device)
@@ -401,6 +404,7 @@ class PixelCL_DB(nn.Module):
                 "image": torch.randn(2, 3, image_size[0], image_size[1], device=device),
                 "daolp": torch.randn(2, 3, image_size[0], image_size[1], device=device)
             }
+            self.forward(mock_dict)
 
     @singleton_rgb('target_encoder_rgb')
     def _get_target_encoder_rgb(self):
@@ -434,7 +438,7 @@ class PixelCL_DB(nn.Module):
         range_view = False
 
         if isinstance(x, dict):
-            if self.use_range_view:
+            if self.use_range_image:
                 range_view = x['range_view']
                 x = x['image']
             else:

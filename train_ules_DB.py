@@ -40,7 +40,7 @@ from models.ULES_DB import Ules as ULES_DB
 @click.option('--only_bb/--bb+head',
               show_default=True,
               help='if triggered, load all state dict, otherwise just backbone',
-              default=True)
+              default=False)
 @click.option('--rgb_only_ft/--full_ft',
               show_default=False,
               help='use to fine tune on rgb only if using a double backbone',
@@ -55,9 +55,9 @@ def main(config, weights, checkpoint, data_ratio, gpus, only_bb, rgb_only_ft, do
     # use the comment block below if you don't plan on using command line
     # data_ratio = 10
     # weights = 'checkpoints/pixpro_range_ar.ckpt'
-    weights = 'checkpoints/pixpro_kitti_range_full_50epochs.ckpt'
+    # weights = 'checkpoints/pixpro_material_dolp.ckpt'
     # rgb_only_ft = False
-    # double_backbone = True
+    double_backbone = False
 
     # Load data and model
     data = StatDataModule(cfg, data_ratio)
@@ -191,12 +191,13 @@ def main(config, weights, checkpoint, data_ratio, gpus, only_bb, rgb_only_ft, do
 
     # Setup trainer
     checkpoint_callback = ModelCheckpoint(dirpath="checkpoints",
-                                          filename="{epoch}-%s_range_final.ckpt" % version_name,
+                                          filename="{epoch}-%s.ckpt" % version_name,
                                           monitor="sem_loss")
 
     torch.set_float32_matmul_precision('high')
     trainer = Trainer(devices=gpus,
                       logger=tb_logger,
+                      log_every_n_steps=10,
                       max_epochs=cfg['train']['max_epoch'],
                       callbacks=[checkpoint_callback])
     # Train

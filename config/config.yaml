@@ -6,7 +6,8 @@ experiment:
 data:
 #    ft-path: "/home/matt/data_dummy/cityscapes/" # path to dataset for fine tuning
 #    ft-path: "/home/matt/data/ipb_car/2019-11-25_second_recording/images/"
-    ft-path: "/home/matt/data/kitti_sem/"
+#    ft-path: "/home/matt/data/kitti_sem/"
+    ft-path: "/home/matt/data/multimodal_dataset/"
 
 ##Training
 train:
@@ -16,7 +17,7 @@ train:
     workers: 8
     max_epoch: 200
     lr: [0.0005, 0.001, 0.0008, 0.0008]
-    batch_size: 32
+    batch_size: 16
     overfit: False
     validation_warmup: 10
 
@@ -27,4 +28,4 @@ model:
 
 tasks:
     semantic_segmentation:
-        n_classes: 12
+        n_classes: 20

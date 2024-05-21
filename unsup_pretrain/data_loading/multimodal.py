@@ -10,7 +10,7 @@ from torch.utils.data import Dataset, DataLoader
 
 class MultimodalMaterialDataset(Dataset):
 
-    def __init__(self, root_dir, transform=None):
+    def __init__(self, root_dir, image_size, split, transform=None):
         """
         Arguments:.
             root_dir (string): Directory with all the images.
@@ -19,8 +19,9 @@ class MultimodalMaterialDataset(Dataset):
         """
         self.root_dir = root_dir
         self.transform = transform
+        self.image_size = image_size
         list_dir = os.path.join(root_dir, 'list_folder')
-        with open(os.path.join(os.path.join(list_dir, "train" + '.txt')), "r") as f:
+        with open(os.path.join(os.path.join(list_dir, split + '.txt')), "r") as f:
             self.image_list = f.read().splitlines()
 
     def __len__(self):
@@ -46,14 +47,16 @@ class MultimodalMaterialDataset(Dataset):
         dolp_name = os.path.join(dolp_dir, self.image_list[idx] + ".npy")
         dolp = np.load(dolp_name)
 
+
         daolp = np.stack([aolp_sin, aolp_cos, dolp], axis=2)
-        daolp = skimage.transform.resize(daolp, (256, 306), order=1, mode="edge")
+        daolp = skimage.transform.resize(daolp, (self.image_size[0], self.image_size[1]), order=1, mode="edge")
+        dolp = skimage.transform.resize(dolp, (self.image_size[0], self.image_size[1]), order=1, mode="edge")
 
         transform_image = transforms.Compose(
             [
-                transforms.Resize((256, 306), transforms.InterpolationMode.BILINEAR),
+                transforms.Resize((self.image_size[0], self.image_size[1]), transforms.InterpolationMode.BILINEAR),
                 transforms.ToTensor(),
-                # transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+                transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
             ]
         )
 
@@ -66,9 +69,11 @@ class MultimodalMaterialDataset(Dataset):
 
         color_image = transform_image(color_image)
         daolp = transform_pol(daolp)
+        dolp = transform_pol(dolp)
 
         # sample = {'image': color_image, 'aolp': aolp, 'dolp': dolp}
-        sample = {'image': color_image, 'daolp': daolp}
+        # sample = {'image': color_image, 'daolp': daolp}
+        sample = {'image': color_image, 'range_view': dolp}
 
         # range_view = transform_image(range_view)
         # range_view = range_view[1]
@@ -79,7 +84,7 @@ class MultimodalMaterialDataset(Dataset):
 
 
 if __name__ == '__main__':
-    multimodal_dataset = MultimodalMaterialDataset(root_dir='/home/matt/data/multimodal_dataset')
+    multimodal_dataset = MultimodalMaterialDataset(root_dir='/home/matt/data/multimodal_dataset', split="train", image_size=[256, 306])
 
     fig = plt.figure()
 
