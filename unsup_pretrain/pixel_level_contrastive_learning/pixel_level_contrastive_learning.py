@@ -180,7 +180,7 @@ class PPM(nn.Module):
 
 # a wrapper class for the base neural network
 # will manage the interception of the hidden layer output
-# and pipe it into the projecter and predictor nets
+# and pipe it into the projector and predictor nets
 
 class NetWrapper(nn.Module):
     def __init__(
@@ -260,7 +260,8 @@ class NetWrapper(nn.Module):
 
     def forward(self, x):
         pixel_representation, instance_representation = self.get_representation(x)
-        instance_representation = instance_representation["out"].flatten(1)
+        #instance_representation = instance_representation["out"].flatten(1)  # use this when entire model
+        instance_representation = instance_representation.flatten(1)
 
         pixel_projector = self._get_pixel_projector(pixel_representation)
         instance_projector = self._get_instance_projector(instance_representation)
@@ -303,7 +304,7 @@ class PixelCL(nn.Module):
             augs.RandomGrayscale(p=0.2),
             RandomApply(filters.GaussianBlur2d((3, 3), (1.5, 1.5)), p=0.1),
             augs.RandomSolarize(p=0.5),
-            augs.Normalize(mean=torch.tensor([0.485, 0.456, 0.406]), std=torch.tensor([0.229, 0.224, 0.225]))
+            #augs.Normalize(mean=torch.tensor([0.485, 0.456, 0.406]), std=torch.tensor([0.229, 0.224, 0.225]))
         )
 
         self.augment1 = default(augment_fn, DEFAULT_AUG)

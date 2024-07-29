@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 from PIL import Image
 from torchvision import transforms
 from torch.utils.data import Dataset, DataLoader
+from skimage import io
 
 
 class MultimodalMaterialDataset(Dataset):
@@ -35,6 +36,7 @@ class MultimodalMaterialDataset(Dataset):
         aolp_sin_dir = os.path.join(self.root_dir, 'polL_aolp_sin')
         aolp_cos_dir = os.path.join(self.root_dir, 'polL_aolp_cos')
         dolp_dir = os.path.join(self.root_dir, 'polL_dolp')
+        nir_dir = os.path.join(self.root_dir, 'NIR_warped')
 
         color_name = os.path.join(color_dir, self.image_list[idx] + ".png")
         color_image = Image.open(color_name).convert('RGB')
@@ -43,37 +45,64 @@ class MultimodalMaterialDataset(Dataset):
         aolp_cos_name = os.path.join(aolp_cos_dir, self.image_list[idx] + ".npy")
         aolp_cos = np.load(aolp_cos_name)
         aolp = np.stack([aolp_sin, aolp_cos], axis=2)
-
         dolp_name = os.path.join(dolp_dir, self.image_list[idx] + ".npy")
         dolp = np.load(dolp_name)
-
 
         daolp = np.stack([aolp_sin, aolp_cos, dolp], axis=2)
         daolp = skimage.transform.resize(daolp, (self.image_size[0], self.image_size[1]), order=1, mode="edge")
         dolp = skimage.transform.resize(dolp, (self.image_size[0], self.image_size[1]), order=1, mode="edge")
 
+        nir_left_offset = 192
+        nir_name = os.path.join(nir_dir, self.image_list[idx] + ".png")
+        nir = Image.open(nir_name).convert('LA')
+        import cv2
+        nir_cv2 = cv2.imread(nir_name, -1)
+        # plt.imshow(nir_cv2)
+        # plt.show()
+        # nir_cv2 = io.imread(nir_name)
+        nir_cv2 = skimage.transform.resize(nir_cv2[:, nir_left_offset:],
+                                           (self.image_size[0], self.image_size[1]), order=1, mode="edge")
+        # nir_cv2 = Image.fromarray(nir_cv2[:, nir_left_offset:])
+        # nir_cv2 = nir_cv2.convert('L')
+        w, h = color_image.size
+        color_image_offset = color_image.crop((nir_left_offset, 0, w, h))
+
         transform_image = transforms.Compose(
             [
                 transforms.Resize((self.image_size[0], self.image_size[1]), transforms.InterpolationMode.BILINEAR),
                 transforms.ToTensor(),
-                transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+                # transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
             ]
         )
 
         transform_pol = transforms.Compose(
             [
-                # transforms.Resize((256, 306), transforms.InterpolationMode.NEAREST),
+                # transforms.Resize((self.image_size[0], self.image_size[1]), transforms.InterpolationMode.NEAREST),
                 transforms.ToTensor(),
             ]
         )
 
-        color_image = transform_image(color_image)
+        transform_nir = transforms.Compose(
+            [
+                transforms.Resize((self.image_size[0], self.image_size[1]), transforms.InterpolationMode.NEAREST),
+                transforms.ToTensor(),
+            ]
+        )
+
+        color_image_full = transform_image(color_image)
+        color_image_offset = transform_image(color_image_offset)
         daolp = transform_pol(daolp)
         dolp = transform_pol(dolp)
+        nir = transform_nir(nir)
+        nir_cv2 = transform_pol(nir_cv2)
 
-        # sample = {'image': color_image, 'aolp': aolp, 'dolp': dolp}
-        # sample = {'image': color_image, 'daolp': daolp}
-        sample = {'image': color_image, 'range_view': dolp}
+        # when using nir capture is limited on the left so we remove it from the other modalities
+
+        # sample = {'image': color_image_full, 'aolp': aolp, 'dolp': dolp}
+        # sample = {'image': color_image_full, 'daolp': daolp}
+        sample = {'image': color_image_offset.float(),
+                  'range_view': nir_cv2.float()}
+        # sample = {'image': color_image_full, 'range_view': dolp}
 
         # range_view = transform_image(range_view)
         # range_view = range_view[1]
@@ -84,18 +113,13 @@ class MultimodalMaterialDataset(Dataset):
 
 
 if __name__ == '__main__':
-    multimodal_dataset = MultimodalMaterialDataset(root_dir='/home/matt/data/multimodal_dataset', split="train", image_size=[256, 306])
+    multimodal_dataset = MultimodalMaterialDataset(root_dir='/home/matt/data/multimodal_dataset', split="train",
+                                                   image_size=[130, 130])
+                                                   # image_size=[256, 306])
+    from utils.tenprint import print_tensor
 
     fig = plt.figure()
 
-    for i, sample in enumerate(multimodal_dataset):
-        print(i, sample)
-
-        ax = plt.subplot(1, 4, i + 1)
-        plt.tight_layout()
-        ax.set_title('Sample #{}'.format(i))
-        ax.axis('off')
-
-        if i == 3:
-            plt.show()
-            break
+    for sample in multimodal_dataset:
+        print_tensor(sample["range_view"])
+        print_tensor(sample["image"])

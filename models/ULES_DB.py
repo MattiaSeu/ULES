@@ -2,6 +2,7 @@
 Unsupervised Learning Enhanced Segmentation
 '''
 from typing import Any, Callable, Dict, List, Optional, Union, Tuple
+import pytorch_lightning
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -13,27 +14,49 @@ from models.loss import mIoULoss, BinaryFocalLoss, CrossEntropyLoss, AsymmetricU
 from torchmetrics import JaccardIndex
 import matplotlib.pyplot as plt
 from utils.segmap import encode_segmap, decode_segmap, kitti_encode, kitti_decode, multi_mat_decode, visnir_decode
-from segmentation_models_pytorch.losses import DiceLoss, LovaszLoss, JaccardLoss, FocalLoss
+from segmentation_models_pytorch.losses import DiceLoss, LovaszLoss, JaccardLoss, FocalLoss, TverskyLoss
 
-cityscapes_idx2class_map = ['unlabelled', 'road',
-                 'sidewalk', 'building',
-                 'wall', 'fence',
-                 'pole', 'traffic_light',
-                 'traffic_sign', 'vegetation',
-                 'terrain', 'sky',
-                 'person', 'rider',
-                 'car', 'truck',
-                 'bus', 'train',
-                 'motorcycle', 'bicycle']
+
+class DbSegmenter(pytorch_lightning.LightningModule):
+    def __init__(self, backbone_rgb, backbone_range, head, fusion_method='add'):
+        super().__init__()
+        self.backbone_rgb = backbone_rgb
+        self.backbone_range = backbone_range
+        self.head = head
+        self.fusion_method = fusion_method
+
+    def forward(self, input):
+        # Forward pass through the RGB backbone
+
+        input_shape = input["image"].shape[-2:]
+
+        rgb_features = self.backbone_rgb(input["image"])
+
+        # Forward pass through the range backbone
+        range_features = self.backbone_range(input["range_view"])
+
+        # Fuse the features using the specified method (e.g., addition)
+        if self.fusion_method == 'add':
+            fused_features = rgb_features["out"] + range_features["out"]
+        else:
+            # Add other fusion methods as needed
+            raise NotImplementedError(f"Fusion method {self.fusion_method} not implemented.")
+
+        # Forward pass through the head
+        output = self.head(fused_features)
+        output = F.interpolate(output, size=input_shape, mode="bilinear", align_corners=False)
+
+        return output
 
 
 class Ules(LightningModule):
 
-    def __init__(self, cfg: dict, mean: Optional[List[float]], std: Optional[List[float]]):
+    def __init__(self, cfg: dict, dataset_name: str, rgb_only_ft: bool, double_backbone: bool, head_only: bool,
+                 mean: Optional[List[float]], std: Optional[List[float]], unfreeze_epoch: int):
         super().__init__()
         self.training_step_outputs = []
         self.validation_step_outputs = []
-        self.n_classes = cfg['tasks']['semantic_segmentation']['n_classes']
+        self.n_classes = cfg['data'][dataset_name]['num_classes']
         self.dropout = cfg['model']['dropout']
         self.epochs = cfg['train']['max_epoch']
         self.warmup = cfg['train']['validation_warmup']
@@ -41,7 +64,10 @@ class Ules(LightningModule):
         self.lr = cfg['train']['lr']
         self.init = cfg['model']['initialization']
 
-        self.dataset_path = cfg["data"]["ft-path"]
+        self.dataset_path = cfg["data"][dataset_name]["location"]
+
+        self.double_backbone = double_backbone
+        self.unfreeze_epoch = unfreeze_epoch
 
         # self.sem_loss = mIoULoss([1., 0.8373, 0.9180, 0.8660, 1.0345, 1.0166, 0.9969, 0.9754,
         #                           1.0489, 0.8786, 1.0023, 0.9539, 0.9843, 1.1116, 0.9037,
@@ -57,11 +83,9 @@ class Ules(LightningModule):
         class_list = torch.arange(0, self.n_classes)
 
         self.sem_loss_dice = DiceLoss(mode="multiclass", ignore_index=ignore_idx)
-        self.sem_loss_focal = FocalLoss(mode="multiclass", ignore_index=ignore_idx) #, gamma=2.0)
+        self.sem_loss_focal = FocalLoss(mode="multiclass", ignore_index=ignore_idx)  #, gamma=2.0)
         self.sem_loss_Lovasz = LovaszLoss(mode="multiclass", ignore_index=ignore_idx)
         self.sem_loss_jaccard = JaccardLoss(mode="multiclass", classes=class_list)
-
-
 
         if "multi" in self.dataset_path:
             self.iou = JaccardIndex(num_classes=self.n_classes, average='none', task="multiclass", ignore_index=255)
@@ -71,9 +95,11 @@ class Ules(LightningModule):
             self.iou = JaccardIndex(num_classes=self.n_classes, average='none', task="multiclass")
 
         if "multi" in self.dataset_path:
-            self.miou = JaccardIndex(num_classes=self.n_classes, average='weighted', task="multiclass", ignore_index=255)
+            self.miou = JaccardIndex(num_classes=self.n_classes, average='weighted', task="multiclass",
+                                     ignore_index=255)
         elif "vis-nir" in self.dataset_path:
-            self.miou = JaccardIndex(num_classes=self.n_classes, average='weighted', task="multiclass", ignore_index=255)
+            self.miou = JaccardIndex(num_classes=self.n_classes, average='weighted', task="multiclass",
+                                     ignore_index=255)
         else:
             self.miou = JaccardIndex(num_classes=self.n_classes, average='weighted', task="multiclass")
 
@@ -83,15 +109,68 @@ class Ules(LightningModule):
         self.accumulated_miou_loss = 0.0
         self.val_loss = 0.0
 
-        self.model = torchvision.models.segmentation.fcn_resnet50(pretrained=False, progress=True, num_classes=self.n_classes,
-                                                                  aux_loss=None)
+        if self.double_backbone:
+            model_rgb = torchvision.models.segmentation.fcn_resnet50(pretrained=False, progress=True,
+                                                                     num_classes=self.n_classes,
+                                                                     aux_loss=None)
+            model_range = torchvision.models.segmentation.fcn_resnet50(pretrained=False, progress=True,
+                                                                       num_classes=self.n_classes,
+                                                                       aux_loss=None)
+
+            backbone_rgb = model_rgb.backbone
+            backbone_range = model_range.backbone
+            multi1d = True  # temp hardcoded for multimodal dataset
+            if multi1d:
+                backbone_range.conv1 = torch.nn.Conv2d(1, 64, kernel_size=(7, 7),
+                                                       stride=(2, 2), padding=(3, 3), bias=False)
+            classifier = model_rgb.classifier
+            self.model = DbSegmenter(backbone_rgb, backbone_range, classifier)
+        else:
+            self.model = torchvision.models.segmentation.fcn_resnet50(pretrained=False, progress=True,
+                                                                      num_classes=self.n_classes, aux_loss=None)
+        self.rgb_only_ft = rgb_only_ft
+        self.head_only = head_only
+
         self.mean = mean
         self.std = std
-        # self.model.backbone.conv1 = torch.nn.Conv2d(4, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
+
+        # self.freeze_backbone()
+        # print("backbone has been frozen")
+
+    def freeze_backbone(self):
+        if self.double_backbone:
+            for param in self.model.backbone_rgb.parameters():
+                param.requires_grad = False
+            for param in self.model.backbone_range.parameters():
+                param.requires_grad = False
+        else:
+            for param in self.model.backbone.parameters():
+                param.requires_grad = False
+
+
+    def unfreeze_backbone(self):
+        if self.double_backbone:
+            for param in self.model.backbone_rgb.parameters():
+                param.requires_grad = True
+            for param in self.model.backbone_range.parameters():
+                param.requires_grad = True
+        else:
+            for param in self.model.backbone.parameters():
+                param.requires_grad = True
 
     def forward(self, input):
-        out = self.model(input)
-        return out['out']
+        if self.double_backbone:
+            if self.rgb_only_ft:
+                input_shape = input["image"].shape[-2:]
+                out = self.model.backbone_rgb(input["image"])
+                out = self.model.head(out["out"])
+                out = F.interpolate(out, size=input_shape, mode="bilinear", align_corners=False)
+            else:
+                out = self.model(input)
+            return out
+        else:
+            out = self.model(input)
+            return out['out']
 
     def getLoss(self, pred, target, is_train=True):
         # target = target.long()
@@ -112,23 +191,29 @@ class Ules(LightningModule):
 
     def on_train_epoch_end(self):
 
-        # n_samples = float(len(self.train_dataloader()))
-
         # n_samples = float(len(self.trainer.datamodule.train_dataloader()))
-        # # n_samples = 38
-        #
+        # # # n_samples = 38
+        # #
         # sem_loss = self.accumulated_miou_loss / n_samples
-        #
+        # #
         # # tensorboard logs
         # self.logger.experiment.add_scalar(
         #     "Loss/sem_loss", sem_loss, self.trainer.current_epoch)
         #
         # self.accumulated_miou_loss *= 0.0
+        if self.current_epoch == self.unfreeze_epoch:
+            # self.unfreeze_backbone()
+            self.configure_optimizers()
+            print("backbone has been unfrozen")
         self.training_step_outputs.clear()
 
     def training_step(self, batch, batch_idx):
-        x = batch['image'].float()
+        if self.double_backbone:
+            x = {"image": batch['image'].float(), "range_view": batch['range_view'].float()}
+        else:
+            x = batch['image'].float()
         pred = self.forward(x)
+
         gt = batch['target']
         if "cityscapes" in self.dataset_path:
             gt_encoded = encode_segmap(gt).long()  # only use a subset of classes
@@ -160,13 +245,23 @@ class Ules(LightningModule):
             #     if counts.max() > threshold:
             #         override_val = values[np.argmax(counts) + 1]
             #         new_decode[mask == 1] = override_val
+
         loss = self.getLoss(pred, gt_encoded)
+
         self.log('sem_loss', loss)
         self.training_step_outputs.append(loss)
+
+        # import math
+        # loss_x = math.radians(self.trainer.current_epoch*(360/50))
+        # loss_modifier = math.cos(loss_x) + 1.1
         return loss
+        #return loss * loss_modifier
 
     def validation_step(self, batch, batch_idx):
-        x = batch['image'].float()
+        if self.double_backbone:
+            x = {"image": batch['image'].float(), "range_view": batch['range_view'].float()}
+        else:
+            x = batch['image'].float()
         gt = batch['target']
 
         pred = self.forward(x)
@@ -176,8 +271,15 @@ class Ules(LightningModule):
             gt_encoded = gt.squeeze()
         else:
             gt_encoded = gt
-        iou = self.iou(pred, gt_encoded)
-        miou = self.miou(pred, gt_encoded)
+
+        try:
+            iou = self.iou(pred, gt_encoded)
+        except:
+            print("iouerror")
+        try:
+            miou = self.miou(pred, gt_encoded)
+        except:
+            print("miouerror")
 
         _ = self.getLoss(pred, batch['target'], False)
 
@@ -278,16 +380,16 @@ class Ules(LightningModule):
                 self.trainer.current_epoch)
         elif "multi" in self.dataset_path:
             self.logger.experiment.add_scalars(
-                "Metrics_iou", {'asphalt'      : self.accumulated_iou[0],  'concrete'    : self.accumulated_iou[1],
-                                'metal'        : self.accumulated_iou[2],  'road_marking': self.accumulated_iou[3],
-                                'fabric'       : self.accumulated_iou[4],  'glass'       : self.accumulated_iou[5],
-                                'plaster'      : self.accumulated_iou[6],  'plastic'     : self.accumulated_iou[7],
-                                'rubber'       : self.accumulated_iou[8],  'sand'        : self.accumulated_iou[9],
-                                'gravel'       : self.accumulated_iou[10], 'ceramic'    : self.accumulated_iou[11],
-                                'cobblestone'  : self.accumulated_iou[12], 'brick'      : self.accumulated_iou[13],
-                                'grass'        : self.accumulated_iou[14], 'wood'       : self.accumulated_iou[15],
-                                'leaf'         : self.accumulated_iou[16], 'water'      : self.accumulated_iou[17],
-                                'human'        : self.accumulated_iou[18], 'sky'        : self.accumulated_iou[19]},
+                "Metrics_iou", {'asphalt': self.accumulated_iou[0], 'concrete': self.accumulated_iou[1],
+                                'metal': self.accumulated_iou[2], 'road_marking': self.accumulated_iou[3],
+                                'fabric': self.accumulated_iou[4], 'glass': self.accumulated_iou[5],
+                                'plaster': self.accumulated_iou[6], 'plastic': self.accumulated_iou[7],
+                                'rubber': self.accumulated_iou[8], 'sand': self.accumulated_iou[9],
+                                'gravel': self.accumulated_iou[10], 'ceramic': self.accumulated_iou[11],
+                                'cobblestone': self.accumulated_iou[12], 'brick': self.accumulated_iou[13],
+                                'grass': self.accumulated_iou[14], 'wood': self.accumulated_iou[15],
+                                'leaf': self.accumulated_iou[16], 'water': self.accumulated_iou[17],
+                                'human': self.accumulated_iou[18], 'sky': self.accumulated_iou[19]},
                 self.trainer.current_epoch)
         elif "vis-nir" in self.dataset_path:
             self.logger.experiment.add_scalars(
@@ -361,79 +463,20 @@ class Ules(LightningModule):
         self.accumulated_iou *= 0
         self.accumulated_miou *= 0
 
+    def predict_step(self, batch, batch_idx, dataloader_idx=0):
+        return self(batch["image"])
+
     def configure_optimizers(self):
-        # self.optimizers = torch.optim.AdamW(
-        #     self.model.classifier.parameters(), lr=self.lr[0])
-        self.optimizers = torch.optim.AdamW(
-            self.model.parameters(), lr=self.lr[0])
+        #self.optimizers_backbone_rgb = torch.optim.AdamW(
+        #    self.model.backbone_rgb.parameters(), lr=self.lr[0]*0.1)
+        #self.optimizers_backbone_range = torch.optim.AdamW(f
+        #    self.model.backbone_range.parameters(), lr=self.lr[0]*0.1)
+        if self.head_only:
+            self.optimizers = torch.optim.AdamW(self.model.head.parameters(), lr=self.lr[0])
+        else:
+            self.optimizers = torch.optim.AdamW(self.model.parameters(), lr=self.lr[0])
+
+        if self.current_epoch == self.unfreeze_epoch:
+            self.optimizers = torch.optim.AdamW(self.model.parameters(), lr=self.lr[0])
 
         return [self.optimizers]
-
-
-class ERFNetEncoder(nn.Module):
-
-    def __init__(self, num_classes, dropout=0.1, batch_norm=True, instance_norm=False, init=None):
-        super().__init__()
-
-        self.initial_block = DownsamplerBlock(3, 16, batch_norm, instance_norm, init)
-        self.layers = nn.ModuleList()
-        self.layers.append(DownsamplerBlock(16, 64, batch_norm, instance_norm, init))
-
-        DROPOUT = dropout
-        for x in range(0, 10):  # 5 times
-            self.layers.append(non_bottleneck_1d(64, DROPOUT, 1, batch_norm, instance_norm, init))
-
-        self.layers.append(DownsamplerBlock(64, 128, batch_norm, instance_norm, init))
-
-        DROPOUT = dropout
-        for x in range(0, 3):  # 2 times
-            self.layers.append(non_bottleneck_1d(128, DROPOUT, 2, batch_norm, instance_norm, init))
-            self.layers.append(non_bottleneck_1d(128, DROPOUT, 4, batch_norm, instance_norm, init))
-            self.layers.append(non_bottleneck_1d(128, DROPOUT, 8, batch_norm, instance_norm, init))
-            self.layers.append(non_bottleneck_1d(128, DROPOUT, 16, batch_norm, instance_norm, init))
-
-        # Only in encoder mode:
-        self.output_conv = nn.Conv2d(
-            128, num_classes, 1, stride=1, padding=0, bias=True)
-
-    def forward(self, input, predict=False):
-        output = []
-        output.append(self.initial_block(input))
-
-        for layer in self.layers:
-            output.append(layer(output[-1]))
-
-        if predict:
-            output.append(self.output_conv(output[-1]))
-
-        return output
-
-
-class DecoderSemanticSegmentation(nn.Module):
-    def __init__(self, num_classes: int, dropout: float, batch_norm=True, instance_norm=False, init=None):
-        super().__init__()
-        self.dropout = dropout
-
-        self.layers1 = nn.Sequential(
-            UpsamplerBlock(128, 64, init),
-            non_bottleneck_1d(64, self.dropout, 1, batch_norm, instance_norm, init),
-            non_bottleneck_1d(64, self.dropout, 1, batch_norm, instance_norm, init),
-        )
-
-        self.layers2 = nn.Sequential(
-            UpsamplerBlock(64, 16, init),
-            non_bottleneck_1d(16, self.dropout, 1, batch_norm, instance_norm, init),
-            non_bottleneck_1d(16, self.dropout, 1, batch_norm, instance_norm, init)
-        )
-
-        self.output_conv = nn.ConvTranspose2d(
-            in_channels=16, out_channels=num_classes, kernel_size=3, stride=2, padding=1, output_padding=1, bias=True)
-
-    def forward(self, input):
-        # skip2, _, _, _, _, _, skip1, _, _, _, _, _, _, _, _, out = input
-
-        output1 = self.layers1(input[-1])  # + skip1
-        output2 = self.layers2(output1)  # + skip2
-        out = self.output_conv(output2)
-
-        return out, [output2, output1]

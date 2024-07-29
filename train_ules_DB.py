@@ -9,6 +9,9 @@ import yaml
 from datasets.datasets import StatDataModule
 from models.ULES import Ules as ULES
 from models.ULES_DB import Ules as ULES_DB
+from pytorch_lightning.callbacks import Callback
+from pytorch_lightning.callbacks import RichProgressBar
+from pytorch_lightning.callbacks.progress.rich_progress import RichProgressBarTheme
 
 
 @click.command()
@@ -49,22 +52,32 @@ from models.ULES_DB import Ules as ULES_DB
               show_default=True,
               help='if triggered, use double backbone',
               default=True)
+
 def main(config, weights, checkpoint, data_ratio, gpus, only_bb, rgb_only_ft, double_backbone):
     cfg = yaml.safe_load(open(config))
     torch.manual_seed(cfg['experiment']['seed'])
+
     # use the comment block below if you don't plan on using command line
-    # data_ratio = 10
-    # weights = 'checkpoints/pixpro_range_ar.ckpt'
-    # weights = 'checkpoints/pixpro_material_dolp.ckpt'
-    # rgb_only_ft = False
-    double_backbone = False
+    dataset_name = "VisNir"
+    # data_ratio = 100
+    if weights == "yes":
+        weights = 'unsup_pretrain/checkpoints/epoch=99-visnir3_db.ckpt'
+    # rgb_only_ft = True
+    # double_backbone = False
+
+    if dataset_name in cfg["data"].keys():
+        image_size = cfg["data"][dataset_name]['image_size']
+        mean = cfg["data"][dataset_name]['mean']
+        std = cfg["data"][dataset_name]['std']
+    else:
+        raise Exception("No dataset named {}".format(dataset_name))
 
     # Load data and model
-    data = StatDataModule(cfg, data_ratio)
-    if double_backbone:
-        model = ULES_DB(cfg, rgb_only_ft)
-    else:
-        model = ULES(cfg)
+    mean = None
+    std = None
+    head_only = False
+    data = StatDataModule(cfg, dataset_name, data_ratio, image_size=image_size, mean=mean, std=std)
+    model = ULES_DB(cfg, dataset_name, rgb_only_ft, double_backbone, head_only, mean, std, unfreeze_epoch=200)
 
     if weights:
         checkpoint = torch.load(weights)
@@ -107,22 +120,28 @@ def main(config, weights, checkpoint, data_ratio, gpus, only_bb, rgb_only_ft, do
         loopable_state_dict = dict(state_dict)
 
         for k in loopable_state_dict.keys():
-            if k.startswith("model.online_encoder.net"):
-                new_k = k.replace("model.online_encoder.net.", "model.")
+            if k.startswith("model.target_encoder.net"):
+                new_k = k.replace("model.target_encoder.net.", "model.")
                 state_dict[new_k] = state_dict.pop(k)
         loopable_state_dict = dict(state_dict)
 
         for k in loopable_state_dict.keys():
-            if k.startswith("model.online_encoder_rgb"):
-                new_k = k.replace("model.online_encoder_rgb.net.backbone.", "model.backbone_rgb.")
+            if k.startswith("model.target_encoder_rgb"):
+                if "net.backbone" in k:
+                    new_k = k.replace("model.target_encoder_rgb.net.backbone.", "model.backbone_rgb.")
+                else:
+                    new_k = k.replace("model.target_encoder_rgb.net.", "model.backbone_rgb.")
                 state_dict[new_k] = state_dict.pop(k)
         loopable_state_dict = dict(state_dict)
 
         # in the pretraining arch I decided to call the range view backbone "gray" because it was a grayscale image
         # in the end they are brought back to a specific color space anyway, so I decided to use "range" here
         for k in loopable_state_dict.keys():
-            if k.startswith("model.online_encoder_gray"):
-                new_k = k.replace("model.online_encoder_gray.net.backbone.", "model.backbone_range.")
+            if k.startswith("model.target_encoder_gray"):
+                if "net.backbone" in k:
+                    new_k = k.replace("model.target_encoder_gray.net.backbone.", "model.backbone_range.")
+                else:
+                    new_k = k.replace("model.target_encoder_gray.net.", "model.backbone_range.")
                 state_dict[new_k] = state_dict.pop(k)
         loopable_state_dict = dict(state_dict)
 
@@ -135,6 +154,7 @@ def main(config, weights, checkpoint, data_ratio, gpus, only_bb, rgb_only_ft, do
             loopable_state_dict = dict(state_dict)
 
         # remove everything that isn't backbone
+
         if only_bb:
             for k in loopable_state_dict.keys():
                 # if not k.startswith("model.backbone"):
@@ -161,6 +181,7 @@ def main(config, weights, checkpoint, data_ratio, gpus, only_bb, rgb_only_ft, do
         # if any("backbone" in s for s in odd_keys[0]):
         #     raise LookupError("No backbone key found. Check weights compatibility with model")
 
+    # model.model.head[4] = torch.nn.Conv2d(512, 23, kernel_size=(1, 1), stride=(1, 1))
     # Add callbacks:
     if cfg['train']['mode'] == "train":
         if double_backbone and not rgb_only_ft:
@@ -173,8 +194,8 @@ def main(config, weights, checkpoint, data_ratio, gpus, only_bb, rgb_only_ft, do
         elif not double_backbone and rgb_only_ft:
             if weights:
                 version_name = "sb_ft_range_"
-        # version_name = version_name + str(data_ratio) + "%"
-        version_name = version_name + "trial_" + str(data_ratio) + "%"
+        version_name = version_name + str(data_ratio) + "%"
+        #version_name = version_name + "crop_jaccard_norm_" + str(data_ratio) + "%"
     elif cfg['train']['mode'] == "eval":
         version_split = checkpoint.replace("checkpoints/", "")
         version_split = version_split.split("_")
@@ -185,25 +206,52 @@ def main(config, weights, checkpoint, data_ratio, gpus, only_bb, rgb_only_ft, do
     elif cfg['train']['mode'] == "infer":
         version_name = "infer_db_ft"
 
+
     # version_name = "trial_100%"
-    tb_logger = pl_loggers.TensorBoardLogger(save_dir=os.getcwd(), name='experiments/',
+    tb_logger = pl_loggers.TensorBoardLogger(save_dir=os.getcwd(), name='experiments/visnir/',
                                              version=version_name, default_hp_metric=False)
 
     # Setup trainer
-    checkpoint_callback = ModelCheckpoint(dirpath="checkpoints",
-                                          filename="{epoch}-%s.ckpt" % version_name,
+    checkpoint_callback = ModelCheckpoint(dirpath="checkpoints/",
+                                          filename="{epoch}-%s" % version_name,
                                           monitor="sem_loss")
+
+
+    # create your own theme!
+    progress_bar = RichProgressBar(
+        theme=RichProgressBarTheme(
+            description="green_yellow",
+            progress_bar="green1",
+            progress_bar_finished="green1",
+            progress_bar_pulse="#6206E0",
+            batch_progress="green_yellow",
+            time="grey82",
+            processing_speed="grey82",
+            metrics="grey82",
+            metrics_text_delimiter="\n",
+            metrics_format=".10e",
+        )
+    )
+
+    # class UnfreezeCallback(Callback):
+    #     def __init__(self, unfreeze_epoch):
+    #         self.unfreeze_epoch = unfreeze_epoch
+    #
+    #     def on_epoch_end(self, trainer, pl_module):
+    #         if trainer.current_epoch == self.unfreeze_epoch:
+    #             pl_module.unfreeze_backbone()
+    #             pl_module.trainer.logger.info("Backbone unfreezed")
 
     torch.set_float32_matmul_precision('high')
     trainer = Trainer(devices=gpus,
                       logger=tb_logger,
                       log_every_n_steps=10,
                       max_epochs=cfg['train']['max_epoch'],
-                      callbacks=[checkpoint_callback])
+                      callbacks=[checkpoint_callback, progress_bar])#, accumulate_grad_batches=2)
     # Train
     if cfg['train']['mode'] == "train":
         trainer.fit(model, datamodule=data)  # .ckpt_path=checkpoint)
-        trainer.save_checkpoint("checkpoints/%s.ckpt" % version_name)
+        # trainer.save_checkpoint("checkpoints/%s/%s.ckpt" % (dataset_name, version_name))
     elif cfg['train']['mode'] == "eval":
         trainer.test(model, ckpt_path=checkpoint, datamodule=data)
     elif cfg['train']['mode'] == "infer":

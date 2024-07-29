@@ -13,6 +13,8 @@ from kornia import filters, color
 
 from einops import rearrange
 
+from utils.tenprint import print_tensor
+
 
 # helper functions
 
@@ -289,7 +291,8 @@ class NetWrapper(nn.Module):
 
     def forward(self, x):
         pixel_representation, instance_representation = self.get_representation(x)
-        instance_representation = instance_representation["out"].flatten(1)
+        #instance_representation = instance_representation["out"].flatten(1)  # use this when entire model
+        instance_representation = instance_representation.flatten(1)
 
         pixel_projector = self._get_pixel_projector(pixel_representation)
         instance_projector = self._get_instance_projector(instance_representation)
@@ -333,7 +336,7 @@ class PixelCL_DB(nn.Module):
             RandomApply(filters.GaussianBlur2d((3, 3), (1.5, 1.5)), p=0.1),
             augs.RandomSolarize(p=0.5),
             # augs.Normalize(mean=torch.tensor([0.485, 0.456, 0.406]), std=torch.tensor([0.229, 0.224, 0.225]))
-            augs.Normalize(mean=torch.tensor([0.288, 0.296, 0.299]), std=torch.tensor([0.285, 0.299, 0.311]))
+            # augs.Normalize(mean=torch.tensor([0.288, 0.296, 0.299]), std=torch.tensor([0.285, 0.299, 0.311]))
         )
 
         self.augment1 = default(augment_fn, DEFAULT_AUG)
@@ -351,7 +354,8 @@ class PixelCL_DB(nn.Module):
 
         net_1ch = copy.deepcopy(net)
         if self.use_range_image:
-            net_1ch.backbone.conv1 = torch.nn.Conv2d(1, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
+            # net_1ch.backbone.conv1 = torch.nn.Conv2d(1, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False) # use this when you are taking the entire network and not just the backbone
+            net_1ch.conv1 = torch.nn.Conv2d(1, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
 
         self.online_encoder_gray = NetWrapper(
             net=net_1ch,

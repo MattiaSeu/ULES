@@ -36,7 +36,7 @@ colors = [
     [119, 11, 32],
 ]
 
-label_colours = dict(zip(range(n_classes), colors))
+label_colours = dict(zip(range(len(colors)), colors))
 
 
 def encode_segmap(mask):
@@ -46,6 +46,8 @@ def encode_segmap(mask):
     for _validc in valid_classes:
         mask[mask == _validc] = class_map[_validc]
     return mask
+
+
 
 
 def decode_segmap(temp):
@@ -130,7 +132,7 @@ def kitti_decode(gray_encode):
     r = temp.copy()
     g = temp.copy()
     b = temp.copy()
-    for l in range(0, 11):
+    for l in range(12):
         r[temp == l] = label_colours[l][0]
         g[temp == l] = label_colours[l][1]
         b[temp == l] = label_colours[l][2]
@@ -165,13 +167,59 @@ def multi_mat_decode(encoded_input):
         [156, 158, 222],  # human body
         [99, 121, 57]  # sky
     ]
-    label_colours = dict(zip(range(12), multi_mat_colors_list))
+    label_colours = dict(zip(range(20), multi_mat_colors_list))
 
     temp = encoded_input.numpy()
     r = temp.copy()
     g = temp.copy()
     b = temp.copy()
-    for l in range(0, 11):
+    for l in range(20):
+        r[temp == l] = label_colours[l][0]
+        g[temp == l] = label_colours[l][1]
+        b[temp == l] = label_colours[l][2]
+
+    rgb = np.zeros((temp.shape[0], temp.shape[1], 3))
+    rgb[:, :, 0] = r / 255.0
+    rgb[:, :, 1] = g / 255.0
+    rgb[:, :, 2] = b / 255.0
+    return rgb
+
+def visnir_decode(encoded_input):
+
+    visnir_colors_list = [
+        [ 192,192,192],  #       asphalt
+        [ 105,105,105],  #       gravel
+        [ 160, 82, 45],  #        soil
+        [ 244,164, 96],  #        sand
+        [  60,179,113],  #        bush
+        [  34,139, 34],  #       forest
+        [ 154,205, 50],  #      low grass
+        [   0,128,  0],  #      high grass
+        [   0,100,  0],  #  misc. vegetation
+        [   0,250,154],  #      tree crown
+        [ 139, 69, 19],  #      tree trunk
+        [   1, 51, 73],  #      building
+        [ 190,153,153],  #       fence
+        [   0,132,111],  #        wall
+        [   0,  0,142],  #        car
+        [   0, 60,100],  #        bus
+        [ 135,206,250],  #        sky
+        [ 128,  0,128],  #    misc. object
+        [ 153,153,153],  #        pole
+        [ 255,255,  0],  #     traffic sign
+        [ 220, 20, 60],  #      person
+        [ 255,182,193],  #      animal
+        [ 220,220,220],  #    ego vehicle
+        [ 0,0,0      ]  #      undefined
+
+    ]
+    label_colours = dict(zip(range(len(visnir_colors_list)), visnir_colors_list))
+
+    temp = encoded_input.numpy()
+    r = temp.copy()
+    g = temp.copy()
+    b = temp.copy()
+    for l in range(20):
         r[temp == l] = label_colours[l][0]
         g[temp == l] = label_colours[l][1]
         b[temp == l] = label_colours[l][2]

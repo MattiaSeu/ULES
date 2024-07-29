@@ -5,6 +5,7 @@ import yaml
 import torchvision
 from pytorch_lightning.utilities.types import EVAL_DATALOADERS
 import skimage.transform
+from skimage import io
 from torchvision.datasets import Cityscapes
 from torch.utils.data import Dataset, DataLoader, RandomSampler, Subset
 from pytorch_lightning import LightningDataModule
@@ -17,12 +18,14 @@ import torch.nn.functional as F
 import glob
 from typing import Any, Callable, Dict, List, Optional, Union, Tuple
 from torchvision import transforms
+import cv2
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
 class StatDataModule(LightningDataModule):
-    def __init__(self, cfg, reduced_data):
+    def __init__(self, dataset_name: str,  cfg, reduced_data, image_size: Optional[List[int]],
+                 mean: Optional[List[float]], std: Optional[List[float]]):
         super().__init__()
         # from cfg I can access all my stuff
         # as data path, data size and so on 
@@ -30,7 +33,11 @@ class StatDataModule(LightningDataModule):
         self.data_val = None
         self.data_test = None
         self.cfg = cfg
+        self.dataset_name = dataset_name
         self.data_ratio = reduced_data
+        self.image_size = image_size
+        self.mean = mean
+        self.std = std
         self.len = -1
         self.setup()
         self.loader = [self.train_dataloader(), self.val_dataloader(), self.test_dataloader(),
@@ -45,29 +52,74 @@ class StatDataModule(LightningDataModule):
 
         self.mode = self.cfg['train']['mode']
 
-        if "cityscape" in self.cfg['data']['ft-path']:
+        if "cityscape" in self.cfg['data'][self.dataset_name]['location']:
             if stage == 'fit' or stage is None:
-                self.data_train = CityData(self.cfg['data']['ft-path'], split='train',
+                self.data_train = CityData(self.cfg['data'][self.dataset_name]['location'], split='train',
                                            mode='fine',
                                            target_type='semantic')
-                self.data_val = CityData(self.cfg['data']['ft-path'], split='val',
+                self.data_val = CityData(self.cfg['data'][self.dataset_name]['location'], split='val',
                                          mode='fine',
                                          target_type='semantic')
-                self.data_test = CityData(self.cfg['data']['ft-path'], split='val',
+                self.data_test = CityData(self.cfg['data'][self.dataset_name]['location'], split='val',
                                           mode='fine',
                                           target_type='semantic')
-        elif "kitti" in self.cfg['data']['ft-path']:
+        elif "kitti" in self.cfg['data'][self.dataset_name]['location']:
             if stage == 'fit' or stage is None:
-                self.data_train = KittiRangeDataset_DB(self.cfg['data']['ft-path'], split='train')
-                self.data_val = KittiRangeDataset_DB(self.cfg['data']['ft-path'], split='test')
-        elif "ipb" in self.cfg['data']['ft-path']:
+                self.data_train = KittiRangeDataset_DB(self.cfg['data'][self.dataset_name]['location'], split='train')
+                self.data_val = KittiRangeDataset_DB(self.cfg['data'][self.dataset_name]['location'], split='test')
+        elif "ipb" in self.cfg['data'][self.dataset_name]['location']:
             if stage == 'fit' or stage is None:
-                self.data_train = IPB_Car(self.cfg['data']['ft-path'])
-                self.data_val = IPB_Car(self.cfg['data']['ft-path'])
-        elif "multi" in self.cfg['data']['ft-path']:
+                self.data_train = IPB_Car(self.cfg['data'][self.dataset_name]['location'])
+                self.data_val = IPB_Car(self.cfg['data'][self.dataset_name]['location'])
+        elif "multi" in self.cfg['data'][self.dataset_name]['location']:
             if stage == 'fit' or stage is None:
-                self.data_train = MultimodalMaterial(self.cfg['data']['ft-path'], split='train', image_size=[128, 153])
-                self.data_val = MultimodalMaterial(self.cfg['data']['ft-path'], split='test', image_size=[128, 153])
+                self.data_train = MultimodalMaterial(self.cfg['data'][self.dataset_name]['location'], split='train', image_size=self.image_size)
+                self.data_val = MultimodalMaterial(self.cfg['data'][self.dataset_name]['location'], split='test', image_size=self.image_size)
+        elif "vis-nir" in self.cfg['data'][self.dataset_name]['location']:
+            if stage == 'fit' or stage is None:
+                data = VisNirDataset(self.cfg['data'][self.dataset_name]['location'],  image_size=self.image_size)
+                from torch.utils.data import DataLoader, Subset
+                from sklearn.model_selection import train_test_split
+
+                TEST_SIZE = 0.1
+                SEED = 42
+
+                # generate indices: instead of the actual data we pass in integers instead
+                train_indices, test_indices = train_test_split(
+                    range(len(data)),
+                    test_size=TEST_SIZE,
+                    random_state=SEED
+                )
+
+                # generate subset based on indices
+                train_split = Subset(data, train_indices)
+                val_split = Subset(data, test_indices)
+
+                self.data_train = train_split
+                self.data_val = val_split
+        elif "roses" in self.cfg['data'][self.dataset_name]['location']:
+            if stage == 'fit' or stage is None:
+                data = MultiSpecCropDataset(self.cfg['data'][self.dataset_name]['location'], mean=self.mean, std=self.std,
+                                            image_size=self.image_size, split="roses23")
+                from torch.utils.data import DataLoader, Subset
+                from sklearn.model_selection import train_test_split
+
+                TEST_SIZE = 0.2
+                SEED = 42
+
+                # generate indices: instead of the actual data we pass in integers instead
+                train_indices, test_indices = train_test_split(
+                    range(len(data)),
+                    test_size=TEST_SIZE,
+                    random_state=SEED
+                )
+
+                # generate subset based on indices
+                train_split = Subset(data, train_indices)
+                val_split = Subset(data, test_indices)
+
+                self.data_train = train_split
+                self.data_val = val_split
         return
 
     def train_dataloader(self):
@@ -374,34 +426,52 @@ class MultimodalMaterial(Dataset):
         if torch.is_tensor(idx):
             idx = idx.tolist()
 
+        # store directory paths in var
         color_dir = os.path.join(self.root_dir, 'polL_color')
         aolp_sin_dir = os.path.join(self.root_dir, 'polL_aolp_sin')
         aolp_cos_dir = os.path.join(self.root_dir, 'polL_aolp_cos')
         dolp_dir = os.path.join(self.root_dir, 'polL_dolp')
+        nir_dir = os.path.join(self.root_dir, 'NIR_warped')
         gt_dir = os.path.join(self.root_dir, 'GT')
 
+        # load data
         color_name = os.path.join(color_dir, self.image_list[idx] + ".png")
         color_image = Image.open(color_name).convert('RGB')
         aolp_sin_name = os.path.join(aolp_sin_dir, self.image_list[idx] + ".npy")
         aolp_sin = np.load(aolp_sin_name)
         aolp_cos_name = os.path.join(aolp_cos_dir, self.image_list[idx] + ".npy")
         aolp_cos = np.load(aolp_cos_name)
-        aolp = np.stack([aolp_sin, aolp_cos], axis=2)
+        # aolp = np.stack([aolp_sin, aolp_cos], axis=2)
+
+        nir_left_offset = 192
+        nir_name = os.path.join(nir_dir, self.image_list[idx] + ".png")
+        nir = Image.open(nir_name).convert('L')
+        nir_cv2 = cv2.imread(nir_name, -1)
+        # remove the nir camera offset
+        nir_cv2 = skimage.transform.resize(nir_cv2[:, nir_left_offset:],
+                                           (self.image_size[0], self.image_size[1]), order=1, mode="edge")
         gt_name = os.path.join(gt_dir, self.image_list[idx] + ".png")
         gt = Image.open(gt_name).convert('L')
 
         dolp_name = os.path.join(dolp_dir, self.image_list[idx] + ".npy")
         dolp = np.load(dolp_name)
 
-        daolp = np.stack([aolp_sin, aolp_cos, dolp], axis=2)
+        daolp = np.stack([aolp_sin, aolp_cos, dolp], axis=2)  # stack all reflection data in a single array
+        nir_array = np.array(nir)
+        daolpnir = np.stack([aolp_sin, aolp_cos, dolp, nir_array], axis=2)
         daolp = skimage.transform.resize(daolp, (self.image_size[0], self.image_size[1]), order=1, mode="edge")
+        daolpnir = skimage.transform.resize(daolpnir, (self.image_size[0], self.image_size[1]), order=1, mode="edge")
         dolp = skimage.transform.resize(dolp, (self.image_size[0], self.image_size[1]), order=1, mode="edge")
+
+        w, h = color_image.size
+        color_image_offset = color_image.crop((nir_left_offset, 0, w, h))
+        gt_offset = gt.crop((nir_left_offset, 0, w, h))
 
         transform_image = transforms.Compose(
             [
                 transforms.Resize((self.image_size[0], self.image_size[1]), transforms.InterpolationMode.BILINEAR),
                 transforms.ToTensor(),
-                transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+                # transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
             ]
         )
 
@@ -417,18 +487,171 @@ class MultimodalMaterial(Dataset):
                 transforms.ToTensor(),
             ]
         )
+        transform_nir = transforms.Compose(
+            [
+                transforms.Resize((self.image_size[0], self.image_size[1]), transforms.InterpolationMode.BILINEAR),
+                transforms.ToTensor(),
+            ]
+        )
 
         color_image = transform_image(color_image)
+        color_image_offset = transform_image(color_image_offset)
         daolp = transform_pol(daolp)
         dolp = transform_pol(dolp)
+        nir = transform_nir(nir)
+        nir_cv2 = transform_pol(nir_cv2)
+        daolpnir = transform_pol(daolpnir)
         gt = transform_gt(gt).squeeze(0) * 255
+        gt_offset = transform_gt(gt_offset).squeeze(0) * 255
 
         # sample = {'image': color_image, 'aolp': aolp, 'dolp': dolp}
-        sample = {'image': color_image, 'range_view': dolp, "target": gt}
+        # sample = {'image': color_image, 'range_view': daolp, "target": gt}
+        sample = {'image': color_image_offset, 'range_view': nir_cv2, "target": gt_offset}
 
         # range_view = transform_image(range_view)
         # range_view = range_view[1]
         # range_view = range_view[None, :, :]
         # sample = torch.cat((color_image, range_view), 0)
+
+        return sample
+
+
+class VisNirDataset(Dataset):
+
+    def __init__(self, root_dir, image_size, transform=None):
+        """
+        Arguments:.
+            root_dir (string): Directory with all the images.
+            transform (callable, optional): Optional transform to be applied
+                on a sample.
+        """
+        self.root_dir = root_dir
+        self.transform = transform
+        self.image_size = image_size
+        self.image_list = os.listdir(self.root_dir + "/vis/")
+
+    def __len__(self):
+        return len(self.image_list)
+
+    def __len__(self):
+        return len(self.image_list)
+
+    def __getitem__(self, idx):
+        if torch.is_tensor(idx):
+            idx = idx.tolist()
+
+        rgb_root = os.path.join(self.root_dir, "vis")
+        nir_root = os.path.join(self.root_dir, "nir")
+        target_root = os.path.join(self.root_dir, "labels_enc")
+
+        img_path = os.path.join(rgb_root, self.image_list[idx])
+        image = Image.open(img_path).convert('RGB')
+
+        nir_path = os.path.join(nir_root, self.image_list[idx])
+        nir = Image.open(nir_path).convert('L')
+
+        target_path = os.path.join(target_root, self.image_list[idx])
+        target = Image.open(target_path).convert('L')
+
+        transform_nir = transforms.Compose(
+            [
+                transforms.Resize(((self.image_size[0], self.image_size[1])),
+                                  transforms.InterpolationMode.NEAREST),
+                transforms.ToTensor()
+            ]
+        )
+
+        transform_image = transforms.Compose(
+            [
+                transforms.Resize(((self.image_size[0], self.image_size[1])),
+                                  transforms.InterpolationMode.BILINEAR),
+                transforms.ToTensor(),
+                #transforms.Normalize([0.4585, 0.4543, 0.4307], [0.2751, 0.2796, 0.2818])
+            ]
+        )
+
+        transform_range = transforms.Compose(
+            [
+                transforms.Resize(((self.image_size[0], self.image_size[1])), transforms.InterpolationMode.NEAREST),
+                transforms.ToTensor(),
+            ]
+        )
+
+        image = transform_image(image)
+        range_view = transform_nir(nir)
+        target = transform_range(target).squeeze(0) * 255
+
+        sample = {"image": image, "range_view": range_view, "target": target}
+
+        return sample
+
+class MultiSpecCropDataset(Dataset):
+
+    def __init__(self, root_dir, image_size, mean: Optional[List[float]], std: Optional[List[float]], split="rose2_haricot", band=5):
+        """
+        Arguments:.
+            root_dir (string): Directory with all the images.
+            transform (callable, optional): Optional transform to be applied
+                on a sample.
+        """
+        self.data_dir = os.path.join(root_dir, split)
+        self.image_size = image_size
+        self.image_list = os.listdir(self.data_dir)
+        self.band = band
+        self.mean = mean
+        self.std = std
+
+    def __len__(self):
+        return len(self.image_list)
+
+    def __getitem__(self, idx):
+        if torch.is_tensor(idx):
+            idx = idx.tolist()
+
+        folder_path = os.path.join(self.data_dir, self.image_list[idx])
+        img_path = os.path.join(folder_path, "false.png")
+        image = Image.open(img_path)
+        width, height = image.size
+
+        sem_annos = np.array(Image.open(os.path.join(folder_path, 'gt.png'))).astype(np.int32)
+        sem = np.zeros((sem_annos.shape[0], sem_annos.shape[1]))
+        sem[sem_annos[:, :, 1] != 0] = 2
+        sem[sem_annos[:, :, 2] != 0] = 1
+
+        im = io.imread(os.path.join(folder_path, "images.tiff"))
+
+        range_view = Image.fromarray(im[:, :, self.band])
+        sem = Image.fromarray(sem)
+
+        transform_image = transforms.Compose(
+            [
+                transforms.Resize(((self.image_size[0], self.image_size[1])),
+                                  transforms.InterpolationMode.BILINEAR),
+                transforms.ToTensor(),
+            ]
+        )
+
+        transform_range = transforms.Compose(
+            [
+                transforms.Resize((self.image_size[0], self.image_size[1]), transforms.InterpolationMode.NEAREST),
+                transforms.ToTensor(),
+            ]
+        )
+
+        if self.mean:
+            transform_image = transforms.Compose(
+                [
+                    transform_image,
+                    transforms.Normalize(mean=self.mean, std=self.std)
+                ]
+            )
+        #range_view = skimage.transform.resize(im[:, :, self.band],(self.image_size[0], self.image_size[1]), order=1, mode="edge")
+        #sem = skimage.transform.resize(sem,(self.image_size[0], self.image_size[1]), order=1, mode="edge")
+
+        image = transform_image(image)
+        range_view = transform_range(range_view)
+        sem = transform_range(sem)
+
+        sample = {"image": image.float(), "range_view": range_view.float(), "target": sem.float()}
 
         return sample
