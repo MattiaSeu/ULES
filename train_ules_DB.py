@@ -1,5 +1,6 @@
 import click
 import os
+import re
 from os.path import join, dirname, abspath
 import torch
 from pytorch_lightning import Trainer
@@ -40,9 +41,9 @@ from pytorch_lightning.callbacks.progress.rich_progress import RichProgressBarTh
               '-g',
               help='number of gpus to be used',
               default=1)
-@click.option('--only_bb/--bb+head',
+@click.option('--head_only/--bb+head',
               show_default=True,
-              help='if triggered, load all state dict, otherwise just backbone',
+              help='if triggered, only load head in optimizer instead of full network',
               default=False)
 @click.option('--rgb_only_ft/--full_ft',
               show_default=False,
@@ -52,16 +53,20 @@ from pytorch_lightning.callbacks.progress.rich_progress import RichProgressBarTh
               show_default=True,
               help='if triggered, use double backbone',
               default=True)
-
-def main(config, weights, checkpoint, data_ratio, gpus, only_bb, rgb_only_ft, double_backbone):
+def main(config, weights, checkpoint, data_ratio, gpus, head_only, rgb_only_ft, double_backbone):
     cfg = yaml.safe_load(open(config))
     torch.manual_seed(cfg['experiment']['seed'])
 
     # use the comment block below if you don't plan on using command line
-    dataset_name = "VisNir"
+    weights = "yes"
+    dataset_name = "Roses"
     # data_ratio = 100
     if weights == "yes":
-        weights = 'unsup_pretrain/checkpoints/epoch=99-visnir3_db.ckpt'
+        weights = 'unsup_pretrain/roses/pixpro_roses_db.ckpt'
+        print("loading weights from {}".format(weights))
+    elif weights == "yesb":
+        weights = "unsup_pretrain/roses/pixpro_roses_sb.ckpt"
+        print("loading weights from {}".format(weights))
     # rgb_only_ft = True
     # double_backbone = False
 
@@ -75,9 +80,9 @@ def main(config, weights, checkpoint, data_ratio, gpus, only_bb, rgb_only_ft, do
     # Load data and model
     mean = None
     std = None
-    head_only = False
+    head_only = True
     data = StatDataModule(cfg, dataset_name, data_ratio, image_size=image_size, mean=mean, std=std)
-    model = ULES_DB(cfg, dataset_name, rgb_only_ft, double_backbone, head_only, mean, std, unfreeze_epoch=200)
+    model = ULES_DB(cfg, dataset_name, rgb_only_ft, double_backbone, head_only, mean, std, unfreeze_epoch=50)
 
     if weights:
         checkpoint = torch.load(weights)
@@ -120,28 +125,28 @@ def main(config, weights, checkpoint, data_ratio, gpus, only_bb, rgb_only_ft, do
         loopable_state_dict = dict(state_dict)
 
         for k in loopable_state_dict.keys():
-            if k.startswith("model.target_encoder.net"):
-                new_k = k.replace("model.target_encoder.net.", "model.")
+            if k.startswith("model.online_encoder.net"):
+                new_k = k.replace("model.online_encoder.net.", "model.")
                 state_dict[new_k] = state_dict.pop(k)
         loopable_state_dict = dict(state_dict)
 
         for k in loopable_state_dict.keys():
-            if k.startswith("model.target_encoder_rgb"):
+            if k.startswith("model.online_encoder_rgb"):
                 if "net.backbone" in k:
-                    new_k = k.replace("model.target_encoder_rgb.net.backbone.", "model.backbone_rgb.")
+                    new_k = k.replace("model.online_encoder_rgb.net.backbone.", "model.backbone_rgb.")
                 else:
-                    new_k = k.replace("model.target_encoder_rgb.net.", "model.backbone_rgb.")
+                    new_k = k.replace("model.online_encoder_rgb.net.", "model.backbone_rgb.")
                 state_dict[new_k] = state_dict.pop(k)
         loopable_state_dict = dict(state_dict)
 
         # in the pretraining arch I decided to call the range view backbone "gray" because it was a grayscale image
         # in the end they are brought back to a specific color space anyway, so I decided to use "range" here
         for k in loopable_state_dict.keys():
-            if k.startswith("model.target_encoder_gray"):
+            if k.startswith("model.online_encoder_gray"):
                 if "net.backbone" in k:
-                    new_k = k.replace("model.target_encoder_gray.net.backbone.", "model.backbone_range.")
+                    new_k = k.replace("model.online_encoder_gray.net.backbone.", "model.backbone_range.")
                 else:
-                    new_k = k.replace("model.target_encoder_gray.net.", "model.backbone_range.")
+                    new_k = k.replace("model.online_encoder_gray.net.", "model.backbone_range.")
                 state_dict[new_k] = state_dict.pop(k)
         loopable_state_dict = dict(state_dict)
 
@@ -155,12 +160,12 @@ def main(config, weights, checkpoint, data_ratio, gpus, only_bb, rgb_only_ft, do
 
         # remove everything that isn't backbone
 
-        if only_bb:
-            for k in loopable_state_dict.keys():
-                # if not k.startswith("model.backbone"):
-                if not "backbone" in k:
-                    del state_dict[k]
-        loopable_state_dict = dict(state_dict)
+        # if only_bb:
+        #     for k in loopable_state_dict.keys():
+        #         # if not k.startswith("model.backbone"):
+        #         if not "backbone" in k:
+        #             del state_dict[k]
+        # loopable_state_dict = dict(state_dict)
 
         # remove the first layer if we're only using the image for image+range pretraining
         # if range_pt:
@@ -194,8 +199,10 @@ def main(config, weights, checkpoint, data_ratio, gpus, only_bb, rgb_only_ft, do
         elif not double_backbone and rgb_only_ft:
             if weights:
                 version_name = "sb_ft_range_"
-        version_name = version_name + str(data_ratio) + "%"
-        #version_name = version_name + "crop_jaccard_norm_" + str(data_ratio) + "%"
+        if not head_only:
+            version_name = version_name + "full_"
+        # version_name = version_name + str(data_ratio) + "%"
+        version_name = version_name + "unfreeze_" + str(data_ratio) + "%"
     elif cfg['train']['mode'] == "eval":
         version_split = checkpoint.replace("checkpoints/", "")
         version_split = version_split.split("_")
@@ -206,9 +213,10 @@ def main(config, weights, checkpoint, data_ratio, gpus, only_bb, rgb_only_ft, do
     elif cfg['train']['mode'] == "infer":
         version_name = "infer_db_ft"
 
-
     # version_name = "trial_100%"
-    tb_logger = pl_loggers.TensorBoardLogger(save_dir=os.getcwd(), name='experiments/visnir/',
+    dataset_snake = re.sub(r'(?<!^)(?=[A-Z])', '_', dataset_name).lower()
+    tb_logger = pl_loggers.TensorBoardLogger(save_dir=os.getcwd(),
+                                             name='experiments/%s/' % dataset_snake,
                                              version=version_name, default_hp_metric=False)
 
     # Setup trainer
@@ -216,8 +224,6 @@ def main(config, weights, checkpoint, data_ratio, gpus, only_bb, rgb_only_ft, do
                                           filename="{epoch}-%s" % version_name,
                                           monitor="sem_loss")
 
-
-    # create your own theme!
     progress_bar = RichProgressBar(
         theme=RichProgressBarTheme(
             description="green_yellow",
@@ -228,8 +234,7 @@ def main(config, weights, checkpoint, data_ratio, gpus, only_bb, rgb_only_ft, do
             time="grey82",
             processing_speed="grey82",
             metrics="grey82",
-            metrics_text_delimiter="\n",
-            metrics_format=".10e",
+            metrics_text_delimiter="\n"
         )
     )
 
@@ -247,7 +252,7 @@ def main(config, weights, checkpoint, data_ratio, gpus, only_bb, rgb_only_ft, do
                       logger=tb_logger,
                       log_every_n_steps=10,
                       max_epochs=cfg['train']['max_epoch'],
-                      callbacks=[checkpoint_callback, progress_bar])#, accumulate_grad_batches=2)
+                      callbacks=[checkpoint_callback, progress_bar])  #, accumulate_grad_batches=2)
     # Train
     if cfg['train']['mode'] == "train":
         trainer.fit(model, datamodule=data)  # .ckpt_path=checkpoint)

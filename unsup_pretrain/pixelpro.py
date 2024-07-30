@@ -1,12 +1,14 @@
 import torch
 import os
+import re
 import pytorch_lightning as pl
+import yaml
+from os.path import join, dirname, abspath
 from pixel_level_contrastive_learning.pixel_level_contrastive_learning import PixelCL
 from pixel_level_contrastive_learning.pixel_level_contrastive_learning_DB import PixelCL_DB
 from torchvision import models
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger
-from torch.utils.data import DataLoader
 # from data_loading.NuScenes import NuScenes
 from data_loading.Kitti_DB import KittiRangeDataset
 from data_loading.multimodal import MultimodalMaterialDataset
@@ -14,6 +16,8 @@ from data_loading.visnir import VisNirDataset
 from data_loading.multispecweed import MultiSpectralCropWeed
 from utils.tenprint import print_tensor
 import click
+from torch.utils.data import DataLoader, Subset
+from sklearn.model_selection import train_test_split
 
 
 class LightningPixelCL(pl.LightningModule):
@@ -38,11 +42,11 @@ class LightningPixelCL(pl.LightningModule):
 
 
 @click.command()
-@click.option('--data_path',
-              '-d',
+@click.option('--config',
+              '-c',
               type=str,
-              help='path to the dataset folder',
-              default="~/data")
+              help='path to the config file (.yaml)',
+              default="/home/matt/PycharmProjects/ULES/config/config.yaml")
 @click.option('--checkpoint',
               '-ckpt',
               type=str,
@@ -66,49 +70,94 @@ class LightningPixelCL(pl.LightningModule):
               '-g',
               help='number of gpus to be used',
               default=1)
-def main(data_path, extra, checkpoint, batch_size, num_workers, gpus):
-    resnet = models.segmentation.fcn_resnet50(pretrained=False, progress=True, num_classes=23,
-                                              aux_loss=None)
-    # resnet.backbone.conv1 = torch.nn.Conv2d(4, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
+@click.option('--double_backbone/--single_backbone',
+              show_default=True,
+              help='if triggered, use double backbone',
+              default=True)
+def main(config, extra, checkpoint, batch_size, num_workers, gpus, double_backbone):
+    cfg = yaml.safe_load(open(config))  # load the config file
 
+    dataset_name = "KyotoMaterialSeg"
+    # check if dataset name is available in the config
+    if dataset_name in cfg["data"].keys():
+        image_size = cfg["data"][dataset_name]['image_size']
+        mean = cfg["data"][dataset_name]['norm']  # currently not implemented to change mean and std from here
+        std = cfg["data"][dataset_name]['std']
+        print("Starting pre-training for the %s dataset" % dataset_name)
+    else:
+        raise Exception("No dataset named {}".format(dataset_name))
 
-    data_path = "/home/matt/data/vis-nir/"
-    # checkpoint = "pixpro_crop_db.ckpt"
-    # city_data_path = os.path.join(data_path, 'cityscapes/')
+    # check for the checkpoint save path to be available
+    datapath_snake = re.sub(r'(?<!^)(?=[A-Z])', '_', dataset_name).lower()
+    version_name = (datapath_snake + "_db") if double_backbone else (datapath_snake + "_sb")
+    checkpoint_save_path = join(datapath_snake, "pixpro_" + version_name + ".ckpt")
+    if os.path.isfile(checkpoint_save_path):
+        answer = input("We detected a checkpoint already saved with the same name. \n Do you want to overwrite? [Y/N]")
+        if answer.upper() in ["Y", "YES"]:
+            print("Existing checkpoint will be overwritten.")
+        else:
+            Exception("Checkpoint name already existing. Please change the location.")
 
-    # extra = False
-    # image_size = [76, 248]
-    # image_size = [130, 130] # multi-modal size
-    # image_size = [90, 160]
-    image_size = [80, 200]  # 6th of cropped nir image
-    # image_size = [106, 160]  # 7th of multispectral image
-    learner = PixelCL_DB(
-        resnet.backbone,
-        image_size=image_size,
-        hidden_layer_pixel='layer4',  # leads to output of 8x8 feature map for pixel-level learning
-        hidden_layer_instance=-2,  # leads to output for instance-level learning
-        projection_size=256,  # size of projection output, 256 was used in the paper
-        projection_hidden_size=256,  # size of projection hidden dimension, paper used 2048
-        moving_average_decay=0.99,  # exponential moving average decay of target encoder
-        ppm_num_layers=1,  # number of layers for transform function in the pixel propagation module, 1 was optimal
-        ppm_gamma=2,  # sharpness of the similarity in the pixel propagation module, already at optimal value of 2
-        distance_thres=0.7,
-        # ideal value is 0.7, as indicated in the paper, which makes the assumption of each feature map's pixel
-        # diagonal distance to be 1 (still unclear)
-        similarity_temperature=0.3,  # temperature for the cosine similarity for the pixel contrastive loss
-        alpha=1.,  # weight of the pixel propagation loss (pixpro) vs pixel CL loss
-        use_pixpro=True,  # do pixel pro instead of pixel contrast loss, defaults to pixpro, since it is the best one
-        cutout_ratio_range=(0.6, 0.8),  # a random ratio is selected from this range for the random cutout
-        use_range_image=True
-    )
+    # Do action you need (<-what was I thinking when I wrote this?? it is a mystery)
+    # initialize the network to be fed to the PixPro arch
+    resnet = models.segmentation.fcn_resnet50(pretrained=False, progress=True,
+                                              num_classes=cfg["data"][dataset_name]['num_classes'], aux_loss=None)
 
+    # checkpoint = "pixpro_crop_db.ckpt"  # hard coded checkpoint for training resume
+
+    # initialize learner and optimizer to pass to the Lightning module
+    # double_backbone = True
+    # TODO: implement a flag to switch between the two options with the same file
+    #  instead of this ugly if-else block
+    if double_backbone:
+        learner = PixelCL_DB(
+            resnet.backbone,  # only pass the backbone of the FCN ResNet
+            image_size=image_size,
+            hidden_layer_pixel='layer4',  # leads to output of feature map for pixel-level learning
+            hidden_layer_instance=-2,  # leads to output for instance-level learning
+            projection_size=256,  # size of projection output, 256 was used in the paper
+            projection_hidden_size=256,  # size of projection hidden dimension, paper used 2048
+            moving_average_decay=0.99,  # exponential moving average decay of target encoder
+            ppm_num_layers=1,  # number of layers for transform function in the pixel propagation module, 1 was optimal
+            ppm_gamma=2,  # sharpness of the similarity in the pixel propagation module, already at optimal value of 2
+            distance_thres=0.7,
+            # ideal value is 0.7, as indicated in the paper, which makes the assumption of each feature map's pixel
+            # diagonal distance to be 1 (still unclear)
+            similarity_temperature=0.3,  # temperature for the cosine similarity for the pixel contrastive loss
+            alpha=1.,  # weight of the pixel propagation loss (pixpro) vs pixel CL loss
+            use_pixpro=True,  # do pixel pro instead of pixel contrast loss, defaults to pixpro, since it is the best one
+            cutout_ratio_range=(0.6, 0.8),  # a random ratio is selected from this range for the random cutout
+            use_range_image=True
+        )
+        print("Running a double backbone pre-training.")
+    else:
+        learner = PixelCL(
+            resnet.backbone,  # only pass the backbone of the FCN ResNet
+            image_size=image_size,
+            hidden_layer_pixel='layer4',  # leads to output of feature map for pixel-level learning
+            hidden_layer_instance=-2,  # leads to output for instance-level learning
+            projection_size=256,  # size of projection output, 256 was used in the paper
+            projection_hidden_size=512,  # size of projection hidden dimension, paper used 2048
+            moving_average_decay=0.99,  # exponential moving average decay of target encoder
+            ppm_num_layers=1,  # number of layers for transform function in the pixel propagation module, 1 was optimal
+            ppm_gamma=2,  # sharpness of the similarity in the pixel propagation module, already at optimal value of 2
+            distance_thres=0.7,
+            # ideal value is 0.7, as indicated in the paper, which makes the assumption of each feature map's pixel
+            # diagonal distance to be 1 (still unclear)
+            similarity_temperature=0.3,  # temperature for the cosine similarity for the pixel contrastive loss
+            alpha=1.,  # weight of the pixel propagation loss (pixpro) vs pixel CL loss
+            use_pixpro=True,
+            # do pixel pro instead of pixel contrast loss, defaults to pixpro, since it is the best one
+            cutout_ratio_range=(0.6, 0.8),  # a random ratio is selected from this range for the random cutout
+            use_range_image=True
+        )
+        print("Running a single backbone pre-training.")
+        
     opt = torch.optim.AdamW(learner.parameters(), lr=1e-4)
-    # opt = torch.optim.SGD(learner.parameters(), lr=0.001, momentum=0.9, weight_decay=0.1)
 
     model = LightningPixelCL(learner, opt)
 
-    version_name = "visnir3_db"
-    checkpoint_callback = ModelCheckpoint(dirpath="checkpoints", save_top_k=2, monitor="loss",
+    checkpoint_callback = ModelCheckpoint(dirpath=join("checkpoints", datapath_snake), save_top_k=2, monitor="loss",
                                           every_n_epochs=25, filename="{epoch}-%s" % version_name)
     torch.set_float32_matmul_precision('high')
 
@@ -117,42 +166,46 @@ def main(data_path, extra, checkpoint, batch_size, num_workers, gpus):
     trainer = pl.Trainer(devices=gpus, logger=tb_logger, callbacks=[checkpoint_callback],
                          max_epochs=200, accumulate_grad_batches=8)
 
-    if extra:
+    # initialize the datasets
+    if extra:  # this flag is only necessary for the Cityscapes dataset
         split_train = 'train_extra'
         mode = 'coarse'
     else:
         split_train = 'train'
         mode = 'fine'
 
-    # train_data = CityDataPixel(city_data_path, split=split_train, mode=mode, target_type='semantic', transforms=None)
-    # val_data = CityDataPixel(city_data_path, split='val', mode=mode, target_type='semantic', transforms=None)
-    # train_data = KittiRangeDataset(root_dir=data_path, split="train", image_size=image_size)
-    # val_data = KittiRangeDataset(root_dir=data_path, split="test", image_size=image_size)
-    # train_data = MultimodalMaterialDataset(root_dir=data_path, split="train", image_size=image_size)
-    # val_data = MultimodalMaterialDataset(root_dir=data_path, split="test", image_size=image_size)
+    match dataset_name:
+        # potentially obsolete
+        # case "Cityscapes":
+        #     train_data = CityDataPixel(city_cfg["data"][dataset_name]['location'], split=split_train, mode=mode, target_type='semantic', transforms=None)
+        case "KittiSem":
+            train_data = KittiRangeDataset(root_dir=cfg["data"][dataset_name]['location'], split="train",
+                                           image_size=image_size)
+        case "KyotoMaterialSeg":
+            train_data = MultimodalMaterialDataset(root_dir=cfg["data"][dataset_name]['location'], split="train",
+                                                   image_size=image_size)
+        case "VisNir":
+            data = VisNirDataset(root_dir=cfg["data"][dataset_name]['location'], image_size=image_size)
+        case "Roses":
+            data = MultiSpectralCropWeed(root_dir=cfg["data"][dataset_name]['location'], image_size=image_size,
+                                         split="roses23")
 
-    data = VisNirDataset(root_dir=data_path, image_size=image_size)
-    #
-    # data = MultiSpectralCropWeed(root_dir=data_path, image_size=image_size, split="roses23")
-    from torch.utils.data import DataLoader, Subset
-    from sklearn.model_selection import train_test_split
-
-    TEST_SIZE = 0.2
-    SEED = 42
-
-    # generate indices: instead of the actual data we pass in integers instead
-    train_indices, test_indices = train_test_split(
-        range(len(data)),
-        test_size=TEST_SIZE,
-        random_state=SEED
-    )
-
-    # generate subset based on indices
-    train_data = Subset(data, train_indices)
+    if dataset_name == "Roses" or  dataset_name == "VisNir":
+        # prepare the dataset split for the datasets that require it
 
 
+        TEST_SIZE = 0.2
+        SEED = 42
 
-    # val_data = NuScenes()
+        # generate indices: instead of the actual data we pass in integers instead
+        train_indices, test_indices = train_test_split(
+            range(len(data)),
+            test_size=TEST_SIZE,
+            random_state=SEED
+        )
+
+        # generate subset based on indices
+        train_data = Subset(data, train_indices)
 
     batch_size = batch_size
 
@@ -161,7 +214,7 @@ def main(data_path, extra, checkpoint, batch_size, num_workers, gpus):
                            drop_last=True),
                 ckpt_path=checkpoint)
 
-    trainer.save_checkpoint("pixpro_" + version_name + ".ckpt")
+    trainer.save_checkpoint(checkpoint_save_path)
 
 
 if __name__ == '__main__':

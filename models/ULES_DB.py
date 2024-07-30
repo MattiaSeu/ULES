@@ -177,10 +177,10 @@ class Ules(LightningModule):
 
         if "roses" in self.dataset_path:
             target = target.squeeze()
-        sem_loss = self.sem_loss_dice(pred, target.long()) + (0.2 * self.sem_loss_focal(pred, target))
+        # sem_loss = self.sem_loss_dice(pred, target.long()) + (0.2 * self.sem_loss_focal(pred, target))
         # sem_loss = self.sem_loss_mIoU(pred, target.long())
         # sem_loss = self.sem_loss_Lovasz(pred, target)
-        # sem_loss = self.sem_loss_jaccard(pred, target.long())
+        sem_loss = self.sem_loss_jaccard(pred, target.long())
 
         if is_train:
             self.accumulated_miou_loss += sem_loss.detach()
@@ -471,12 +471,15 @@ class Ules(LightningModule):
         #    self.model.backbone_rgb.parameters(), lr=self.lr[0]*0.1)
         #self.optimizers_backbone_range = torch.optim.AdamW(f
         #    self.model.backbone_range.parameters(), lr=self.lr[0]*0.1)
-        if self.head_only:
+        if self.head_only and self.double_backbone:
             self.optimizers = torch.optim.AdamW(self.model.head.parameters(), lr=self.lr[0])
+        elif self.head_only and not self.double_backbone:
+            self.optimizers = torch.optim.AdamW(self.model.classifier.parameters(), lr=self.lr[0])
         else:
             self.optimizers = torch.optim.AdamW(self.model.parameters(), lr=self.lr[0])
 
         if self.current_epoch == self.unfreeze_epoch:
             self.optimizers = torch.optim.AdamW(self.model.parameters(), lr=self.lr[0])
+            print("Full optimization starting at epoch %d" % self.current_epoch)
 
         return [self.optimizers]

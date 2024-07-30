@@ -24,7 +24,7 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
 class StatDataModule(LightningDataModule):
-    def __init__(self, dataset_name: str,  cfg, reduced_data, image_size: Optional[List[int]],
+    def __init__(self, cfg: dict, dataset_name: str,  reduced_data: int, image_size: Optional[List[int]],
                  mean: Optional[List[float]], std: Optional[List[float]]):
         super().__init__()
         # from cfg I can access all my stuff
@@ -529,9 +529,6 @@ class VisNirDataset(Dataset):
         self.transform = transform
         self.image_size = image_size
         self.image_list = os.listdir(self.root_dir + "/vis/")
-
-    def __len__(self):
-        return len(self.image_list)
 
     def __len__(self):
         return len(self.image_list)
