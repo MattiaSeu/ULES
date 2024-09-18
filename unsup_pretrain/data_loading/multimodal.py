@@ -71,7 +71,7 @@ class MultimodalMaterialDataset(Dataset):
             [
                 transforms.Resize((self.image_size[0], self.image_size[1]), transforms.InterpolationMode.BILINEAR),
                 transforms.ToTensor(),
-                # transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+                transforms.Normalize(mean=(0.30553093, 0.29185508, 0.3206072), std=(0.31198422, 0.31180399, 0.32578236)),
             ]
         )
 
@@ -113,13 +113,21 @@ class MultimodalMaterialDataset(Dataset):
 
 
 if __name__ == '__main__':
-    multimodal_dataset = MultimodalMaterialDataset(root_dir='/home/matt/data/multimodal_dataset', split="train",
+    dataset = MultimodalMaterialDataset(root_dir='/home/matt/data/multimodal_dataset', split="train",
                                                    image_size=[130, 130])
                                                    # image_size=[256, 306])
     from utils.tenprint import print_tensor
 
+    import matplotlib
+
+    print(matplotlib.get_backend())
+    # matplotlib.use('Qt5Agg')
+    # print(matplotlib.get_backend())
     fig = plt.figure()
 
-    for sample in multimodal_dataset:
+    for sample in dataset:
+        print(matplotlib.get_backend())
+        # print(sample["image"].shape)
+        # print(sample["range_view"].shape)
         print_tensor(sample["range_view"])
         print_tensor(sample["image"])

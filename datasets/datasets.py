@@ -471,7 +471,7 @@ class MultimodalMaterial(Dataset):
             [
                 transforms.Resize((self.image_size[0], self.image_size[1]), transforms.InterpolationMode.BILINEAR),
                 transforms.ToTensor(),
-                # transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+                transforms.Normalize(mean=(0.30553093, 0.29185508, 0.3206072), std=(0.31198422, 0.31180399, 0.32578236)),
             ]
         )
 

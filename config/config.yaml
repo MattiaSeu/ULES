@@ -9,37 +9,41 @@ data:
     location: "/home/matt/data_dummy/cityscapes/"
     image_size: [90, 160]
     std: [0.229, 0.224, 0.225]
-    norm: [0.485, 0.456, 0.406]
+    mean: [0.485, 0.456, 0.406]
 
   IPBCar:
     location:  "/home/matt/data/ipb_car/2019-11-25_second_recording/images/"
     image_size: [90,160]
     std: [0.235, 0.230, 0.229]
-    norm: [0.490, 0.465, 0.415]
+    mean: [0.490, 0.465, 0.415]
 
   KittiSem:
     location: "/home/matt/data/kitti_sem/"
     image_size: [90, 160]
     std: [0.220, 0.218, 0.217]
-    norm: [0.500, 0.470, 0.420]
+    mean: [0.500, 0.470, 0.420]
+    num_classes: 12
 
   KyotoMaterialSeg:
     location: "/home/matt/data/multimodal_dataset/"
-    image_size: [130,130]
-    std: [0.240, 0.235, 0.233]
-    norm: [0.510, 0.475, 0.425]
+#    image_size: [170, 172]
+    image_size: [224, 224]
+#    std: [0.240, 0.235, 0.233]
+#    mean: [0.510, 0.475, 0.425]
+    std: [0.31198422, 0.31180399, 0.32578236]
+    mean: [0.30553093, 0.29185508, 0.3206072]
     num_classes: 20
 
   VisNir:
     location: "/home/matt/data/vis-nir/"
-    image_size: [80, 200]
+    image_size: [224, 224]
     mean : [0.4585, 0.4543, 0.4307]
     std : [0.2751, 0.2796, 0.2818]
     num_classes: 23
 
   Roses:
     location: "/home/matt/data/roses/"
-    image_size: [106, 160]
+    image_size: [224, 224]
     mean : [0.4422, 0.4400, 0.2145]
     std : [0.1684, 0.1434, 0.0600]
     num_classes: 3
@@ -49,10 +53,10 @@ train:
     mode: 'train'
 #    mode: 'infer'
     n_gpus: 1
-    workers: 4
-    max_epoch: 100
-    lr: [0.005, 0.001, 0.0008, 0.0008]
-    batch_size: 16
+    workers: 6
+    max_epoch: 60
+    lr: [0.0001, 0.001, 0.0008, 0.0008]
+    batch_size: 2
     overfit: False
     validation_warmup: 10
 

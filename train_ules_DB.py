@@ -58,17 +58,17 @@ def main(config, weights, checkpoint, data_ratio, gpus, head_only, rgb_only_ft, 
     torch.manual_seed(cfg['experiment']['seed'])
 
     # use the comment block below if you don't plan on using command line
-    weights = "yes"
-    dataset_name = "Roses"
+    weights = "yesb"
+    dataset_name = "VisNir"
     # data_ratio = 100
     if weights == "yes":
-        weights = 'unsup_pretrain/roses/pixpro_roses_db.ckpt'
+        # weights = 'unsup_pretrain/checkpoints/kyoto_material_seg/pixpro_kyoto_material_seg_db_final.ckpt'
+        weights = '/home/matt/PycharmProjects/VicREGL/experiments/model_resnet50_visnir_sb.pth'
         print("loading weights from {}".format(weights))
     elif weights == "yesb":
-        weights = "unsup_pretrain/roses/pixpro_roses_sb.ckpt"
+        weights = "/home/matt/PycharmProjects/VicREGL/experiments/model_resnet50_visnir_db_v2.pth"
         print("loading weights from {}".format(weights))
-    # rgb_only_ft = True
-    # double_backbone = False
+
 
     if dataset_name in cfg["data"].keys():
         image_size = cfg["data"][dataset_name]['image_size']
@@ -80,98 +80,132 @@ def main(config, weights, checkpoint, data_ratio, gpus, head_only, rgb_only_ft, 
     # Load data and model
     mean = None
     std = None
-    head_only = True
+    # head_only = True
+    # rgb_only_ft = True
+    # double_backbone = False
+
     data = StatDataModule(cfg, dataset_name, data_ratio, image_size=image_size, mean=mean, std=std)
-    model = ULES_DB(cfg, dataset_name, rgb_only_ft, double_backbone, head_only, mean, std, unfreeze_epoch=50)
+    model = ULES_DB(cfg, dataset_name, rgb_only_ft, double_backbone, head_only, mean, std, input_size=image_size, unfreeze_epoch=200)
 
     if weights:
         checkpoint = torch.load(weights)
-        state_dict = checkpoint["state_dict"]
-        loopable_state_dict = dict(state_dict)
 
-        # following loop is to adapt from pixel pro learner weights
-        for k in loopable_state_dict.keys():
-            if k.startswith("backbone.0."):
-                new_k = k.replace("backbone.0.", "backbone.conv1.")
-                state_dict[new_k] = state_dict.pop(k)
-            if k.startswith("backbone.1."):
-                new_k = k.replace("backbone.1.", "backbone.bn1.")
-                state_dict[new_k] = state_dict.pop(k)
-        loopable_state_dict = dict(state_dict)
+        # VICRegL key adaptations
+        if weights.endswith('.pth'):
+            state_dict = checkpoint['model']
+            loopable_state_dict = dict(state_dict)
 
-        # remove an unused key
-        for k in loopable_state_dict.keys():
-            if k.endswith("num_batches_tracked"):
-                del state_dict[k]
-        loopable_state_dict = dict(state_dict)
-
-        # all these following loops are to adapt the key names to our architecture
-        for k in loopable_state_dict.keys():
-            k_str = str(k)
-            k_split = k_str.split(sep=".")
-            if len(k_split) == 3:
-                continue
-            k_suffix = k_split[1]
-            if k.startswith("backbone." + k_suffix + "."):
-                k_suffix_new = str(int(k_suffix) - 3)
-                new_k = k.replace("backbone." + k_suffix + ".", "backbone.layer" + k_suffix_new + ".")
-                state_dict[new_k] = state_dict.pop(k)
-        loopable_state_dict = dict(state_dict)
-
-        for k in loopable_state_dict.keys():
-            if k.startswith("backbone"):
-                new_k = k.replace("backbone.", "model.backbone.")
-                state_dict[new_k] = state_dict.pop(k)
-        loopable_state_dict = dict(state_dict)
-
-        for k in loopable_state_dict.keys():
-            if k.startswith("model.online_encoder.net"):
-                new_k = k.replace("model.online_encoder.net.", "model.")
-                state_dict[new_k] = state_dict.pop(k)
-        loopable_state_dict = dict(state_dict)
-
-        for k in loopable_state_dict.keys():
-            if k.startswith("model.online_encoder_rgb"):
-                if "net.backbone" in k:
-                    new_k = k.replace("model.online_encoder_rgb.net.backbone.", "model.backbone_rgb.")
-                else:
-                    new_k = k.replace("model.online_encoder_rgb.net.", "model.backbone_rgb.")
-                state_dict[new_k] = state_dict.pop(k)
-        loopable_state_dict = dict(state_dict)
-
-        # in the pretraining arch I decided to call the range view backbone "gray" because it was a grayscale image
-        # in the end they are brought back to a specific color space anyway, so I decided to use "range" here
-        for k in loopable_state_dict.keys():
-            if k.startswith("model.online_encoder_gray"):
-                if "net.backbone" in k:
-                    new_k = k.replace("model.online_encoder_gray.net.backbone.", "model.backbone_range.")
-                else:
-                    new_k = k.replace("model.online_encoder_gray.net.", "model.backbone_range.")
-                state_dict[new_k] = state_dict.pop(k)
-        loopable_state_dict = dict(state_dict)
-
-        # this block is to only use the rgb weights of the pretrained double backbone
-        if rgb_only_ft and not double_backbone:
+            # backbone1/2 to rgb/range
+            if double_backbone:
+                for k in loopable_state_dict.keys():
+                    if k.startswith("backbone1."):
+                        new_k = k.replace("backbone1.", "backbone_rgb.")
+                    elif k.startswith("backbone2."):
+                        new_k = k.replace("backbone2.", "backbone_range.")
+                    state_dict[new_k] = state_dict.pop(k)
+                loopable_state_dict = dict(state_dict)
+            # add model in front
             for k in loopable_state_dict.keys():
-                if k.startswith("model.backbone_rgb"):
-                    new_k = k.replace("model.backbone_rgb.", "model.backbone.")
+                new_k = "model." + k
+                state_dict[new_k] = state_dict.pop(k)
+            loopable_state_dict = dict(state_dict)
+            # delete classifier entries
+            for k in loopable_state_dict.keys():
+                if k.startswith("model.classifier"):
+                    del state_dict[k]
+            loopable_state_dict = dict(state_dict)
+            for k in loopable_state_dict.keys():
+                if k.endswith("num_batches_tracked"):
+                    del state_dict[k]
+
+
+        if weights.endswith('.ckpt'):
+            state_dict = checkpoint["state_dict"]
+            loopable_state_dict = dict(state_dict)
+
+            # following loop is to adapt from pixel pro learner weights
+            for k in loopable_state_dict.keys():
+                if k.startswith("backbone.0."):
+                    new_k = k.replace("backbone.0.", "backbone.conv1.")
+                    state_dict[new_k] = state_dict.pop(k)
+                if k.startswith("backbone.1."):
+                    new_k = k.replace("backbone.1.", "backbone.bn1.")
                     state_dict[new_k] = state_dict.pop(k)
             loopable_state_dict = dict(state_dict)
 
-        # remove everything that isn't backbone
+            # remove an unused key
+            for k in loopable_state_dict.keys():
+                if k.endswith("num_batches_tracked"):
+                    del state_dict[k]
+            loopable_state_dict = dict(state_dict)
 
-        # if only_bb:
-        #     for k in loopable_state_dict.keys():
-        #         # if not k.startswith("model.backbone"):
-        #         if not "backbone" in k:
-        #             del state_dict[k]
-        # loopable_state_dict = dict(state_dict)
+            # all these following loops are to adapt the key names to our architecture
+            for k in loopable_state_dict.keys():
+                k_str = str(k)
+                k_split = k_str.split(sep=".")
+                if len(k_split) == 3:
+                    continue
+                k_suffix = k_split[1]
+                if k.startswith("backbone." + k_suffix + "."):
+                    k_suffix_new = str(int(k_suffix) - 3)
+                    new_k = k.replace("backbone." + k_suffix + ".", "backbone.layer" + k_suffix_new + ".")
+                    state_dict[new_k] = state_dict.pop(k)
+            loopable_state_dict = dict(state_dict)
 
-        # remove the first layer if we're only using the image for image+range pretraining
-        # if range_pt:
-        #     for k in loopable_state_dict.keys():
-        #         if k.startswith("model.backbone.conv1"):
-        #             del state_dict[k]
+            for k in loopable_state_dict.keys():
+                if k.startswith("backbone"):
+                    new_k = k.replace("backbone.", "model.backbone.")
+                    state_dict[new_k] = state_dict.pop(k)
+            loopable_state_dict = dict(state_dict)
+
+            for k in loopable_state_dict.keys():
+                if k.startswith("model.online_encoder.net"):
+                    new_k = k.replace("model.online_encoder.net.", "model.")
+                    state_dict[new_k] = state_dict.pop(k)
+            loopable_state_dict = dict(state_dict)
+
+            for k in loopable_state_dict.keys():
+                if k.startswith("model.online_encoder_rgb"):
+                    if "net.backbone" in k:
+                        new_k = k.replace("model.online_encoder_rgb.net.backbone.", "model.backbone_rgb.")
+                    else:
+                        new_k = k.replace("model.online_encoder_rgb.net.", "model.backbone_rgb.")
+                    state_dict[new_k] = state_dict.pop(k)
+            loopable_state_dict = dict(state_dict)
+
+            # in the pretraining arch I decided to call the range view backbone "gray" because it was a grayscale image
+            # in the end they are brought back to a specific color space anyway, so I decided to use "range" here
+            for k in loopable_state_dict.keys():
+                if k.startswith("model.online_encoder_gray"):
+                    if "net.backbone" in k:
+                        new_k = k.replace("model.online_encoder_gray.net.backbone.", "model.backbone_range.")
+                    else:
+                        new_k = k.replace("model.online_encoder_gray.net.", "model.backbone_range.")
+                    state_dict[new_k] = state_dict.pop(k)
+            loopable_state_dict = dict(state_dict)
+
+            # this block is to only use the rgb weights of the pretrained double backbone
+            if rgb_only_ft and not double_backbone:
+                for k in loopable_state_dict.keys():
+                    if k.startswith("model.backbone_rgb"):
+                        new_k = k.replace("model.backbone_rgb.", "model.backbone.")
+                        state_dict[new_k] = state_dict.pop(k)
+                loopable_state_dict = dict(state_dict)
+
+            # remove everything that isn't backbone
+
+            # if only_bb:
+            #     for k in loopable_state_dict.keys():
+            #         # if not k.startswith("model.backbone"):
+            #         if not "backbone" in k:
+            #             del state_dict[k]
+            # loopable_state_dict = dict(state_dict)
+
+            # remove the first layer if we're only using the image for image+range pretraining
+            # if range_pt:
+            #     for k in loopable_state_dict.keys():
+            #         if k.startswith("model.backbone.conv1"):
+            #             del state_dict[k]
 
         odd_keys = model.load_state_dict(state_dict, strict=False)  # stores mismatching keys for warning
         # warn the user of mismatching keys
@@ -200,9 +234,15 @@ def main(config, weights, checkpoint, data_ratio, gpus, head_only, rgb_only_ft, 
             if weights:
                 version_name = "sb_ft_range_"
         if not head_only:
-            version_name = version_name + "full_"
-        # version_name = version_name + str(data_ratio) + "%"
-        version_name = version_name + "unfreeze_" + str(data_ratio) + "%"
+            version_name = "full_" + version_name
+        extra = "VICREGL_v3_"
+        if weights:
+            if "l2" in weights:
+                extra += "l2_"
+            elif "l3" in weights:
+                extra += "l3_"
+
+        version_name = version_name + extra + str(data_ratio) + "%"
     elif cfg['train']['mode'] == "eval":
         version_split = checkpoint.replace("checkpoints/", "")
         version_split = version_split.split("_")
@@ -218,6 +258,16 @@ def main(config, weights, checkpoint, data_ratio, gpus, head_only, rgb_only_ft, 
     tb_logger = pl_loggers.TensorBoardLogger(save_dir=os.getcwd(),
                                              name='experiments/%s/' % dataset_snake,
                                              version=version_name, default_hp_metric=False)
+    exp_name = 'experiments/%s/%s/' % (dataset_snake, version_name)
+    if os.path.isfile(exp_name):
+        answer = input("We detected a checkpoint already saved with the same name. \n Do you want to overwrite? [Y/N]")
+        if answer.upper() in ["Y", "YES"]:
+            print("Existing checkpoint will be overwritten.")
+        else:
+            Exception("Checkpoint name already existing. Please change the location.")
+
+
+    print("The current experiment is being saved in%s" % exp_name)
 
     # Setup trainer
     checkpoint_callback = ModelCheckpoint(dirpath="checkpoints/",
@@ -252,7 +302,7 @@ def main(config, weights, checkpoint, data_ratio, gpus, head_only, rgb_only_ft, 
                       logger=tb_logger,
                       log_every_n_steps=10,
                       max_epochs=cfg['train']['max_epoch'],
-                      callbacks=[checkpoint_callback, progress_bar])  #, accumulate_grad_batches=2)
+                      callbacks=[checkpoint_callback, progress_bar])#, accumulate_grad_batches=2)
     # Train
     if cfg['train']['mode'] == "train":
         trainer.fit(model, datamodule=data)  # .ckpt_path=checkpoint)

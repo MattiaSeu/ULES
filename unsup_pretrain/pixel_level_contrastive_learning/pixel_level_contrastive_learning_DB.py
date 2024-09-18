@@ -5,10 +5,13 @@ from functools import wraps, partial
 from math import floor
 
 import torch
+import torchvision
 from torch import nn, einsum
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 
-from kornia import augmentation as augs
+# from kornia import augmentation as augs
+from torchvision import transforms as augs
 from kornia import filters, color
 
 from einops import rearrange
@@ -188,13 +191,26 @@ class PPM(nn.Module):
             raise ValueError('num_layers must be one of 0, 1, or 2')
 
     def forward(self, x):
-        xi = x[:, :, :, :, None, None]
-        xj = x[:, :, None, None, :, :]
-        similarity = F.relu(F.cosine_similarity(xi, xj, dim=1)) ** self.gamma
+        return checkpoint(self._forward, x)
 
+    def _forward(self, x):
+        b, c, h, w = x.shape
+        x_flat = x.view(b, c, -1)
+
+        # Compute cosine similarity more efficiently
+        x_norm = F.normalize(x_flat, dim=1)
+        similarity = torch.bmm(x_norm.transpose(1, 2), x_norm).pow(self.gamma)
+
+        # Apply ReLU
+        similarity = F.relu(similarity)
+
+        # Transform in a memory-efficient way
         transform_out = self.transform_net(x)
-        out = einsum('b x y h w, b c h w -> b c x y', similarity, transform_out)
-        return out
+        transform_flat = transform_out.view(b, c, -1)
+
+        # Compute the output
+        out = torch.bmm(transform_flat, similarity)
+        return out.view(b, c, h, w)
 
 
 # a wrapper class for the base neural network
@@ -334,9 +350,7 @@ class PixelCL_DB(nn.Module):
             RandomApply(augs.ColorJitter(0.8, 0.8, 0.8, 0.2), p=0.8),
             augs.RandomGrayscale(p=0.2),
             RandomApply(filters.GaussianBlur2d((3, 3), (1.5, 1.5)), p=0.1),
-            augs.RandomSolarize(p=0.5),
-            # augs.Normalize(mean=torch.tensor([0.485, 0.456, 0.406]), std=torch.tensor([0.229, 0.224, 0.225]))
-            # augs.Normalize(mean=torch.tensor([0.288, 0.296, 0.299]), std=torch.tensor([0.285, 0.299, 0.311]))
+            augs.RandomSolarize(threshold=0.1, p=0.5),
         )
 
         self.augment1 = default(augment_fn, DEFAULT_AUG)
@@ -352,7 +366,9 @@ class PixelCL_DB(nn.Module):
             layer_instance=hidden_layer_instance
         )
 
-        net_1ch = copy.deepcopy(net)
+        net_1ch = torchvision.models.segmentation.fcn_resnet50(pretrained=False, progress=True,
+                                                               num_classes=20, aux_loss=None)
+        net_1ch = net_1ch.backbone
         if self.use_range_image:
             # net_1ch.backbone.conv1 = torch.nn.Conv2d(1, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False) # use this when you are taking the entire network and not just the backbone
             net_1ch.conv1 = torch.nn.Conv2d(1, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
@@ -553,8 +569,10 @@ class PixelCL_DB(nn.Module):
         pred_instance_one = self.online_predictor_rgb(proj_instance_one_rgb + proj_instance_one_range)
         pred_instance_two = self.online_predictor_rgb(proj_instance_two_rgb + proj_instance_two_range)
 
-        loss_instance_one = loss_fn(pred_instance_one, target_proj_instance_two_rgb.detach())
-        loss_instance_two = loss_fn(pred_instance_two, target_proj_instance_one_rgb.detach())
+        target_proj_instance_two = target_proj_instance_two_rgb + target_proj_instance_two_range
+        target_proj_instance_one = target_proj_instance_one_rgb + target_proj_instance_one_range
+        loss_instance_one = loss_fn(pred_instance_one, target_proj_instance_two.detach())
+        loss_instance_two = loss_fn(pred_instance_two, target_proj_instance_one.detach())
 
         instance_loss = (loss_instance_one + loss_instance_two).mean()
         # instance_loss_range = (loss_instance_one_range + loss_instance_two_range).mean()
@@ -575,14 +593,15 @@ class PixelCL_DB(nn.Module):
                                                          target_proj_pixel_one_rgb[..., None, :],
                                                          dim=1) / self.similarity_temperature
 
-            proj_pixel_one_range, proj_pixel_two_range = list(map(flatten, (proj_pixel_one_range, proj_pixel_two_range)))
+            proj_pixel_one_range, proj_pixel_two_range = list(
+                map(flatten, (proj_pixel_one_range, proj_pixel_two_range)))
 
             similarity_one_two_range = F.cosine_similarity(proj_pixel_one_range[..., :, None],
-                                                          target_proj_pixel_two_range[..., None, :],
-                                                          dim=1) / self.similarity_temperature
+                                                           target_proj_pixel_two_range[..., None, :],
+                                                           dim=1) / self.similarity_temperature
             similarity_two_one_range = F.cosine_similarity(proj_pixel_two_range[..., :, None],
-                                                          target_proj_pixel_one_range[..., None, :],
-                                                          dim=1) / self.similarity_temperature
+                                                           target_proj_pixel_one_range[..., None, :],
+                                                           dim=1) / self.similarity_temperature
 
             loss_pix_one_two = -torch.log(
                 similarity_one_two_rgb.masked_select(positive_mask_one_two[None, ...]).exp().sum() /
@@ -604,16 +623,28 @@ class PixelCL_DB(nn.Module):
             propagated_pixels_one, propagated_pixels_two = list(
                 map(flatten, (propagated_pixels_one, propagated_pixels_two)))
 
-            target_sum_two = target_proj_pixel_two_rgb[..., None, :] + target_proj_pixel_two_range[..., None, :]
-            target_sum_one = target_proj_pixel_one_rgb[..., None, :] + target_proj_pixel_one_range[..., None, :]
+            target_sum_two = (target_proj_pixel_two_rgb + target_proj_pixel_two_range)
+            target_sum_one = (target_proj_pixel_one_rgb + target_proj_pixel_one_range)
 
-            propagated_similarity_one_two = F.cosine_similarity(propagated_pixels_one[..., :, None],
-                                                                target_sum_two, dim=1)
-            propagated_similarity_two_one = F.cosine_similarity(propagated_pixels_two[..., :, None],
-                                                                target_sum_one, dim=1)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
-            loss_pixpro_one_two = - propagated_similarity_one_two.masked_select(positive_mask_one_two[None, ...]).mean()
-            loss_pixpro_two_one = - propagated_similarity_two_one.masked_select(positive_mask_two_one[None, ...]).mean()
+            prop_pix_one = F.normalize(propagated_pixels_one, dim=1)
+            targ_sum_two = F.normalize(target_sum_two, dim=1)
+            propagated_similarity_one_two = torch.bmm(prop_pix_one.transpose(1, 2), targ_sum_two)
+
+            prop_pix_two = F.normalize(propagated_pixels_two, dim=1)
+            targ_sum_one = F.normalize(target_sum_one, dim=1)
+            propagated_similarity_two_one = torch.bmm(prop_pix_two.transpose(1, 2), targ_sum_one)
+
+            # propagated_similarity_one_two = F.cosine_similarity(propagated_pixels_one,
+            #                                                     target_sum_two, dim=1)
+            # propagated_similarity_two_one = F.cosine_similarity(propagated_pixels_two,
+            #                                                     target_sum_one, dim=1)
+
+
+            loss_pixpro_one_two = - propagated_similarity_one_two.masked_select(positive_mask_one_two.unsqueeze(0)).mean()
+            loss_pixpro_two_one = - propagated_similarity_two_one.masked_select(positive_mask_two_one.unsqueeze(0)).mean()
 
             pix_loss = (loss_pixpro_one_two + loss_pixpro_two_one) / 2
 

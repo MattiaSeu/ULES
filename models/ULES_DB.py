@@ -9,7 +9,8 @@ import torch.nn.functional as F
 import torchvision
 import numpy as np
 from pytorch_lightning import LightningModule
-from models.blocks import DownsamplerBlock, UpsamplerBlock, non_bottleneck_1d
+from models.blocks import DownsamplerBlock, UpsamplerBlock, non_bottleneck_1d, SqueezeAndExciteFusionAdd, \
+    AdaptivePyramidPoolingModule
 from models.loss import mIoULoss, BinaryFocalLoss, CrossEntropyLoss, AsymmetricUnifiedFocalLoss
 from torchmetrics import JaccardIndex
 import matplotlib.pyplot as plt
@@ -18,26 +19,80 @@ from segmentation_models_pytorch.losses import DiceLoss, LovaszLoss, JaccardLoss
 
 
 class DbSegmenter(pytorch_lightning.LightningModule):
-    def __init__(self, backbone_rgb, backbone_range, head, fusion_method='add'):
+    def __init__(self, backbone_rgb, backbone_range, head, input_size: Optional[List[int]],
+                 fusion_method='add', esa_arch=False, context=False):
         super().__init__()
         self.backbone_rgb = backbone_rgb
         self.backbone_range = backbone_range
         self.head = head
         self.fusion_method = fusion_method
+        self.esa_arch = esa_arch
+        self.context = context
+        self.input_size = input_size
+
+        if self.fusion_method == 'fuse':
+            self.se_layer0 = SqueezeAndExciteFusionAdd(64)
+            self.se_layer1 = SqueezeAndExciteFusionAdd(256)
+            self.se_layer2 = SqueezeAndExciteFusionAdd(512)
+            self.se_layer3 = SqueezeAndExciteFusionAdd(1024)
+            self.se_layer4 = SqueezeAndExciteFusionAdd(2048)
+        if self.context:
+            self.context = AdaptivePyramidPoolingModule(2048, 2048, input_size=self.input_size)
+        if self.esa_arch:
+            print("Using the ESANet architecture.")
 
     def forward(self, input):
         # Forward pass through the RGB backbone
+        if self.esa_arch:
 
-        input_shape = input["image"].shape[-2:]
+            # store the input shape the adaptive pyramid pooling later
+            input_shape = input["image"].shape[-2:]
 
-        rgb_features = self.backbone_rgb(input["image"])
+            # layer "0" fusion
+            rgb = self.backbone_rgb.conv1(input["image"])
+            range = self.backbone_range.conv1(input["range_view"])
+            fused = self.se_layer0(rgb, range)
 
-        # Forward pass through the range backbone
-        range_features = self.backbone_range(input["range_view"])
+            rgb = self.backbone_rgb.maxpool(fused)
+            range = self.backbone_range.maxpool(range)
+
+            # FCN layer 1 fused
+            rgb = self.backbone_rgb.layer1(rgb)
+            range = self.backbone_range.layer1(range)
+            fused = self.se_layer1(rgb, range)
+
+            # FCN layer 2 fused
+            rgb = self.backbone_rgb.layer2(fused)
+            range = self.backbone_range.layer2(range)
+            fused = self.se_layer2(rgb, range)
+
+            # FCN layer 3 fused
+            rgb = self.backbone_rgb.layer3(fused)
+            range = self.backbone_range.layer3(range)
+            fused = self.se_layer3(rgb, range)
+
+            # FCN layer 4 fused
+            rgb = self.backbone_rgb.layer4(fused)
+            range = self.backbone_range.layer4(range)
+            fused_features = self.se_layer4(rgb, range)
+
+            # if self.context:
+            # #     fused_features = self.context(fused)
+            # else:
+            #     pass
+        else:
+            input_shape = input["image"].shape[-2:]
+
+            rgb_features = self.backbone_rgb(input["image"])
+
+            # Forward pass through the range backbone
+            range_features = self.backbone_range(input["range_view"])
 
         # Fuse the features using the specified method (e.g., addition)
         if self.fusion_method == 'add':
             fused_features = rgb_features["out"] + range_features["out"]
+        elif self.fusion_method == 'fuse':
+            pass  # we are doing everything in the ESANet arch
         else:
             # Add other fusion methods as needed
             raise NotImplementedError(f"Fusion method {self.fusion_method} not implemented.")
@@ -52,7 +107,7 @@ class DbSegmenter(pytorch_lightning.LightningModule):
 class Ules(LightningModule):
 
     def __init__(self, cfg: dict, dataset_name: str, rgb_only_ft: bool, double_backbone: bool, head_only: bool,
-                 mean: Optional[List[float]], std: Optional[List[float]], unfreeze_epoch: int):
+                 mean: Optional[List[float]], std: Optional[List[float]], unfreeze_epoch: int, input_size: List[int]):
         super().__init__()
         self.training_step_outputs = []
         self.validation_step_outputs = []
@@ -68,6 +123,7 @@ class Ules(LightningModule):
 
         self.double_backbone = double_backbone
         self.unfreeze_epoch = unfreeze_epoch
+        self.input_size = input_size
 
         # self.sem_loss = mIoULoss([1., 0.8373, 0.9180, 0.8660, 1.0345, 1.0166, 0.9969, 0.9754,
         #                           1.0489, 0.8786, 1.0023, 0.9539, 0.9843, 1.1116, 0.9037,
@@ -91,15 +147,17 @@ class Ules(LightningModule):
             self.iou = JaccardIndex(num_classes=self.n_classes, average='none', task="multiclass", ignore_index=255)
         elif "vis-nir" in self.dataset_path:
             self.iou = JaccardIndex(num_classes=self.n_classes, average='none', task="multiclass", ignore_index=255)
+        elif "kitti" in self.dataset_path:
+            self.iou = JaccardIndex(num_classes=self.n_classes, average='none', task="multiclass", ignore_index=0)
         else:
             self.iou = JaccardIndex(num_classes=self.n_classes, average='none', task="multiclass")
 
         if "multi" in self.dataset_path:
-            self.miou = JaccardIndex(num_classes=self.n_classes, average='weighted', task="multiclass",
-                                     ignore_index=255)
+            self.miou = JaccardIndex(num_classes=self.n_classes, average='weighted', task="multiclass", ignore_index=255)
         elif "vis-nir" in self.dataset_path:
-            self.miou = JaccardIndex(num_classes=self.n_classes, average='weighted', task="multiclass",
-                                     ignore_index=255)
+            self.miou = JaccardIndex(num_classes=self.n_classes, average='weighted', task="multiclass", ignore_index=255)
+        elif "kitti" in self.dataset_path:
+            self.miou = JaccardIndex(num_classes=self.n_classes, average='weighted', task="multiclass", ignore_index=0)
         else:
             self.miou = JaccardIndex(num_classes=self.n_classes, average='weighted', task="multiclass")
 
@@ -109,13 +167,20 @@ class Ules(LightningModule):
         self.accumulated_miou_loss = 0.0
         self.val_loss = 0.0
 
+        pretrained = False
         if self.double_backbone:
-            model_rgb = torchvision.models.segmentation.fcn_resnet50(pretrained=False, progress=True,
-                                                                     num_classes=self.n_classes,
-                                                                     aux_loss=None)
-            model_range = torchvision.models.segmentation.fcn_resnet50(pretrained=False, progress=True,
-                                                                       num_classes=self.n_classes,
-                                                                       aux_loss=None)
+            # TODO remove this pretrained test branch
+            if pretrained:
+                model_rgb = torchvision.models.segmentation.deeplabv3_resnet50(pretrained=pretrained, progress=True,
+                                                                               aux_loss=None)
+                model_rgb.classifier[-1] = torch.nn.Conv2d(512, self.n_classes, kernel_size=(1, 1), stride=(1, 1))
+            else:
+                model_rgb = torchvision.models.segmentation.deeplabv3_resnet50(pretrained=pretrained, progress=True,
+                                                                               num_classes=self.n_classes,
+                                                                               aux_loss=None)
+            model_range = torchvision.models.segmentation.deeplabv3_resnet50(pretrained=False, progress=True,
+                                                                             num_classes=self.n_classes,
+                                                                             aux_loss=None)
 
             backbone_rgb = model_rgb.backbone
             backbone_range = model_range.backbone
@@ -124,10 +189,12 @@ class Ules(LightningModule):
                 backbone_range.conv1 = torch.nn.Conv2d(1, 64, kernel_size=(7, 7),
                                                        stride=(2, 2), padding=(3, 3), bias=False)
             classifier = model_rgb.classifier
-            self.model = DbSegmenter(backbone_rgb, backbone_range, classifier)
+            self.model = DbSegmenter(backbone_rgb, backbone_range, classifier, fusion_method="fuse", esa_arch=True,
+                                     context=False, input_size=self.input_size)
         else:
-            self.model = torchvision.models.segmentation.fcn_resnet50(pretrained=False, progress=True,
-                                                                      num_classes=self.n_classes, aux_loss=None)
+            print("Instantiating a single backbone model.")
+            self.model = torchvision.models.segmentation.deeplabv3_resnet50(pretrained=False, progress=True,
+                                                                            num_classes=self.n_classes, aux_loss=None)
         self.rgb_only_ft = rgb_only_ft
         self.head_only = head_only
 
@@ -146,7 +213,6 @@ class Ules(LightningModule):
         else:
             for param in self.model.backbone.parameters():
                 param.requires_grad = False
-
 
     def unfreeze_backbone(self):
         if self.double_backbone:
@@ -177,10 +243,11 @@ class Ules(LightningModule):
 
         if "roses" in self.dataset_path:
             target = target.squeeze()
-        # sem_loss = self.sem_loss_dice(pred, target.long()) + (0.2 * self.sem_loss_focal(pred, target))
+        # sem_loss = (0.5 * self.sem_loss_Lovasz(pred, target.long()) + 0.3 * self.sem_loss_focal(pred, target.long()) + 0.2 * self.sem_loss_dice(pred, target.long()))
+        sem_loss = 0.8 * self.sem_loss_dice(pred, target.long()) + (0.2 * self.sem_loss_focal(pred, target.long()))
         # sem_loss = self.sem_loss_mIoU(pred, target.long())
         # sem_loss = self.sem_loss_Lovasz(pred, target)
-        sem_loss = self.sem_loss_jaccard(pred, target.long())
+        # sem_loss = self.sem_loss_jaccard(pred, target.long())
 
         if is_train:
             self.accumulated_miou_loss += sem_loss.detach()
@@ -272,14 +339,8 @@ class Ules(LightningModule):
         else:
             gt_encoded = gt
 
-        try:
-            iou = self.iou(pred, gt_encoded)
-        except:
-            print("iouerror")
-        try:
-            miou = self.miou(pred, gt_encoded)
-        except:
-            print("miouerror")
+        iou = self.iou(pred, gt_encoded)
+        miou = self.miou(pred, gt_encoded)
 
         _ = self.getLoss(pred, batch['target'], False)
 
@@ -473,13 +534,136 @@ class Ules(LightningModule):
         #    self.model.backbone_range.parameters(), lr=self.lr[0]*0.1)
         if self.head_only and self.double_backbone:
             self.optimizers = torch.optim.AdamW(self.model.head.parameters(), lr=self.lr[0])
+            scheduler = torch.optim.lr_scheduler.OneCycleLR(
+                self.optimizers,
+                max_lr=5e-4,  # Corresponding to the two parameter groups
+                total_steps=self.trainer.estimated_stepping_batches,
+                pct_start=0.1,
+                anneal_strategy='cos',
+                cycle_momentum=True,
+                base_momentum=0.85,
+                max_momentum=0.95,
+                div_factor=25.0,
+                final_div_factor=10000.0,
+                three_phase=False
+            )
+
+            return {
+                "optimizer": self.optimizers,
+                "lr_scheduler": {
+                    "scheduler": scheduler,
+                    "interval": "step",
+                },
+            }
         elif self.head_only and not self.double_backbone:
             self.optimizers = torch.optim.AdamW(self.model.classifier.parameters(), lr=self.lr[0])
-        else:
-            self.optimizers = torch.optim.AdamW(self.model.parameters(), lr=self.lr[0])
+            scheduler = torch.optim.lr_scheduler.OneCycleLR(
+                self.optimizers,
+                max_lr=5e-4,  # Corresponding to the two parameter groups
+                total_steps=self.trainer.estimated_stepping_batches,
+                pct_start=0.1,
+                anneal_strategy='cos',
+                cycle_momentum=True,
+                base_momentum=0.85,
+                max_momentum=0.95,
+                div_factor=25.0,
+                final_div_factor=10000.0,
+                three_phase=False
+            )
 
-        if self.current_epoch == self.unfreeze_epoch:
-            self.optimizers = torch.optim.AdamW(self.model.parameters(), lr=self.lr[0])
-            print("Full optimization starting at epoch %d" % self.current_epoch)
+            return {
+                "optimizer": self.optimizers,
+                "lr_scheduler": {
+                    "scheduler": scheduler,
+                    "interval": "step",
+                },
+            }
+        elif not self.head_only and self.double_backbone:
+            self.optimizers = torch.optim.AdamW([
+                {'params': self.model.backbone_rgb.parameters(), 'lr': self.lr[0]},
+                {'params': self.model.backbone_range.parameters(), 'lr': self.lr[0]},
+                {'params': self.model.head.parameters(), 'lr': self.lr[1]}
+            ])
 
-        return [self.optimizers]
+            scheduler = torch.optim.lr_scheduler.OneCycleLR(
+                self.optimizers,
+                max_lr=[5e-4, 5e-4, 5e-3],  # Corresponding to the two parameter groups
+                total_steps=self.trainer.estimated_stepping_batches,
+                pct_start=0.1,
+                anneal_strategy='cos',
+                cycle_momentum=True,
+                base_momentum=0.85,
+                max_momentum=0.95,
+                div_factor=25.0,
+                final_div_factor=10000.0,
+                three_phase=False
+            )
+
+            return {
+                "optimizer": self.optimizers,
+                "lr_scheduler": {
+                    "scheduler": scheduler,
+                    "interval": "step",
+                },
+            }
+        elif not self.head_only and not self.double_backbone:
+
+            self.optimizers = torch.optim.AdamW(self.model.parameters(), lr=self.lr[0])
+            scheduler = torch.optim.lr_scheduler.OneCycleLR(
+                self.optimizers,
+                max_lr=5e-4,
+                total_steps=self.trainer.estimated_stepping_batches,
+                pct_start=0.1,
+                anneal_strategy='cos',
+                cycle_momentum=True,
+                base_momentum=0.85,
+                max_momentum=0.95,
+                div_factor=25.0,
+                final_div_factor=10000.0,
+                three_phase=False
+            )
+
+            return {
+                "optimizer": self.optimizers,
+                "lr_scheduler": {
+                    "scheduler": scheduler,
+                    "interval": "step",
+                },
+            }
+        # return [self.optimizers]
+
+
+def main():
+    import yaml
+    cfg = yaml.safe_load(open("/home/matt/PycharmProjects/ULES/config/config.yaml"))
+    dataset_name = "KyotoMaterialSeg"
+
+    if dataset_name in cfg["data"].keys():
+        image_size = cfg["data"][dataset_name]['image_size']
+        mean = cfg["data"][dataset_name]['mean']
+        std = cfg["data"][dataset_name]['std']
+    else:
+        raise Exception("No dataset named {}".format(dataset_name))
+
+    # Load data and model
+    mean = None
+    std = None
+    head_only = False
+    rgb_only_ft = False
+    double_backbone = True
+    model = Ules(cfg, dataset_name, rgb_only_ft, double_backbone, head_only, mean, std, unfreeze_epoch=200,
+                 input_size=[260, 260])
+
+    print(model)
+
+    model.eval()
+    sample = {"image": torch.randn(1, 3, image_size[0], image_size[1]),
+              "range_view": torch.randn(1, 1, image_size[0], image_size[1])}
+
+    with torch.no_grad():
+        output = model(sample)
+    print(output.shape)
+
+
+if __name__ == '__main__':
+    main()
