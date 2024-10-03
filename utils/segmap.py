@@ -95,6 +95,7 @@ def kitti_encode(color_kitti_labels):
 
     # gray = torch.zeros(temp.shape[:2])
     def rgb_to_gray(rgb):
+        # TODO: fix the unresolved reference or get rid of the function entirely
         gray = np.zeros(rgb.shape[:2], dtype=np.uint8)
         for color, gray_value in rgb_to_gray_mapping.items():
             mask = np.all(rgb == np.array(color), axis=-1)

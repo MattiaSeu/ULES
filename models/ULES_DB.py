@@ -16,6 +16,9 @@ from torchmetrics import JaccardIndex
 import matplotlib.pyplot as plt
 from utils.segmap import encode_segmap, decode_segmap, kitti_encode, kitti_decode, multi_mat_decode, visnir_decode
 from segmentation_models_pytorch.losses import DiceLoss, LovaszLoss, JaccardLoss, FocalLoss, TverskyLoss
+from models.DINOv2 import Dinov2ForSemanticSegmentation
+from transformers import AutoConfig
+from transformers.modeling_outputs import BaseModelOutputWithPooling
 
 
 class DbSegmenter(pytorch_lightning.LightningModule):
@@ -90,7 +93,10 @@ class DbSegmenter(pytorch_lightning.LightningModule):
 
         # Fuse the features using the specified method (e.g., addition)
         if self.fusion_method == 'add':
-            fused_features = rgb_features["out"] + range_features["out"]
+            if isinstance(rgb_features, BaseModelOutputWithPooling):
+                fused_features = rgb_features.last_hidden_state[:, 1:, :] + range_features.last_hidden_state[:, 1:, :]
+            else:
+                fused_features = rgb_features["out"] + range_features["out"]
         elif self.fusion_method == 'fuse':
             pass  # we are doing everything in the ESANet arch
         else:
@@ -168,6 +174,7 @@ class Ules(LightningModule):
         self.val_loss = 0.0
 
         pretrained = False
+        dino = True
         if self.double_backbone:
             # TODO remove this pretrained test branch
             if pretrained:
@@ -175,26 +182,95 @@ class Ules(LightningModule):
                                                                                aux_loss=None)
                 model_rgb.classifier[-1] = torch.nn.Conv2d(512, self.n_classes, kernel_size=(1, 1), stride=(1, 1))
             else:
-                model_rgb = torchvision.models.segmentation.deeplabv3_resnet50(pretrained=pretrained, progress=True,
-                                                                               num_classes=self.n_classes,
-                                                                               aux_loss=None)
+                model_rgb = torchvision.models.segmentation.deeplabv3_resnet50(pretrained=pretrained, progress=True,num_classes=self.n_classes,aux_loss=None)
+                if dino:
+                    id2label = {
+                        0: "asphalt",
+                        1: "gravel",
+                        2: "soil",
+                        3: "sand",
+                        4: "bush",
+                        5: "forest",
+                        6: "lowgrass",
+                        7: "highgrass",
+                        8: "misc.vegetation",
+                        9: "treecrown",
+                        10: "treetrunk",
+                        11: "building",
+                        12: "fence",
+                        13: "wall",
+                        14: "car",
+                        15: "bus",
+                        16: "sky",
+                        17: "misc.object",
+                        19: "pole",
+                        18: "trafficsign",
+                        20: "person",
+                        21: "animal",
+                        22: "egovehicle",
+                        255: "undefined"
+                    }
+                    model_rgb = Dinov2ForSemanticSegmentation.from_pretrained("facebook/dinov2-base", id2label=id2label, num_labels=len(id2label))
             model_range = torchvision.models.segmentation.deeplabv3_resnet50(pretrained=False, progress=True,
                                                                              num_classes=self.n_classes,
                                                                              aux_loss=None)
+            if dino:
+                model_range=  Dinov2ForSemanticSegmentation.from_pretrained("facebook/dinov2-base",id2label=id2label,
+                                                                              num_labels=len(id2label))
 
-            backbone_rgb = model_rgb.backbone
-            backbone_range = model_range.backbone
+
+
+            if dino:
+                backbone_rgb = model_rgb.dinov2
+                backbone_range = model_range.dinov2
+            else:
+                backbone_rgb = model_rgb.backbone
+                backbone_range = model_range.backbone
+
             multi1d = True  # temp hardcoded for multimodal dataset
             if multi1d:
-                backbone_range.conv1 = torch.nn.Conv2d(1, 64, kernel_size=(7, 7),
+                if dino:
+                    backbone_range.embeddings.patch_embeddings.projection = torch.nn.Conv2d(1, 768, kernel_size=(14, 14), stride=(14, 14))
+                    backbone_range.config.num_channels = 1
+                    backbone_range.embeddings.patch_embeddings.num_channels = 1
+                else:
+                    backbone_range.conv1 = torch.nn.Conv2d(1, 64, kernel_size=(7, 7),
                                                        stride=(2, 2), padding=(3, 3), bias=False)
+
             classifier = model_rgb.classifier
-            self.model = DbSegmenter(backbone_rgb, backbone_range, classifier, fusion_method="fuse", esa_arch=True,
+            self.model = DbSegmenter(backbone_rgb, backbone_range, classifier, fusion_method="add", esa_arch=False,
                                      context=False, input_size=self.input_size)
         else:
             print("Instantiating a single backbone model.")
-            self.model = torchvision.models.segmentation.deeplabv3_resnet50(pretrained=False, progress=True,
-                                                                            num_classes=self.n_classes, aux_loss=None)
+            # self.model = torchvision.models.segmentation.deeplabv3_resnet50(pretrained=False, progress=True,
+            #                                                                 num_classes=self.n_classes, aux_loss=None)
+            id2label = {
+                0: "asphalt",
+                1: "gravel",
+                2: "soil",
+                3: "sand",
+                4: "bush",
+                5: "forest",
+                6: "lowgrass",
+                7: "highgrass",
+                8: "misc.vegetation",
+                9: "treecrown",
+                10: "treetrunk",
+                11: "building",
+                12: "fence",
+                13: "wall",
+                14: "car",
+                15: "bus",
+                16: "sky",
+                17: "misc.object",
+                19: "pole",
+                18: "trafficsign",
+                20: "person",
+                21: "animal",
+                22: "egovehicle",
+                255: "undefined"
+            }
+            self.model = Dinov2ForSemanticSegmentation.from_pretrained("facebook/dinov2-base", id2label=id2label, num_labels=len(id2label))
         self.rgb_only_ft = rgb_only_ft
         self.head_only = head_only
 

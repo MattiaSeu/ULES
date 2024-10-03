@@ -39,7 +39,7 @@ data:
     image_size: [224, 224]
     mean : [0.4585, 0.4543, 0.4307]
     std : [0.2751, 0.2796, 0.2818]
-    num_classes: 23
+    num_classes: 24
 
   Roses:
     location: "/home/matt/data/roses/"
@@ -56,7 +56,7 @@ train:
     workers: 6
     max_epoch: 60
     lr: [0.0001, 0.001, 0.0008, 0.0008]
-    batch_size: 2
+    batch_size: 4
     overfit: False
     validation_warmup: 10
 

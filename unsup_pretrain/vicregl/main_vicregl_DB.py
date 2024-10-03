@@ -208,7 +208,7 @@ def main(args):
                     print(json.dumps(stats))
                     print(json.dumps(stats), file=stats_file)
                     last_logging = current_time
-            extra_str = "_db_v3" if double_backbone else "_sb_v3"
+            extra_str = "_db_comp" if double_backbone else "_sb_comp"
             utils.checkpoint(args, epoch + 1, step, model, optimizer, name = args.arch + "_" + args.dataset + extra_str)
 
             # evaluate
@@ -216,8 +216,18 @@ def main(args):
                 if args.evaluate:
                     evaluate(model, logs, val_loader, args, epoch, lr, stats_file, gpu)
     except KeyboardInterrupt:
-        extra_str = "_db_v3" if double_backbone else "_sb_v3"
-        utils.checkpoint(args, epoch, step, model, optimizer, name = args.arch + "_" + args.dataset + extra_str)
+        extra_str = "_db_nomulti" if double_backbone else "_sb_nomulti"
+        save_name = "model_" + args.arch + "_" + args.dataset + extra_str
+        save_path = os.path.join(args.exp_dir, save_name)
+        if os.path.exists(save_path + ".pth"):
+            user_input = input(f"The file '{save_name}' already exists. Do you want to overwrite it? (y/n): ").lower()
+            if user_input == "y":
+                utils.checkpoint(args, epoch, step, model, optimizer, name = save_name)
+            elif user_input == "n":
+                suffix = input("Please provide a suffix to append to the original path: ").lower()
+                utils.checkpoint(args, epoch, step, model, optimizer, name=save_name + suffix)
+        else:
+            utils.checkpoint(args, epoch, step, model, optimizer, name = save_name)
 
 def evaluate(model, logs, val_loader, args, epoch, lr, stats_file, gpu):
     model.eval()
@@ -323,6 +333,11 @@ class DualVICRegL(nn.Module):
                 drop_path_rate=self.args.drop_path_rate,
                 layer_scale_init_value=self.args.layer_scale_init_value,
             )
+            if ch != 3:
+                backbone.downsample_layers[0] = nn.Sequential(
+                    nn.Conv2d(1, 96, kernel_size=4, stride=4),
+                    convnext.LayerNorm(96, eps=1e-6, data_format="channels_first"),
+                )
         elif "resnet" in arch:
             import resnet
             backbone, representation_dim = resnet.__dict__[arch](zero_init_residual=True)

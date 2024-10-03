@@ -102,6 +102,7 @@ class VisNirDataset(Dataset):
 
 
         transformed = self.transform(image, nir)
+        # return tuple([transformed[0][0], transformed[1]])
         return transformed
 
 class MultimodalMaterialDataset(Dataset):
@@ -380,29 +381,31 @@ if __name__ == '__main__':
     parser.add_argument("--no-flip-grid", type=int, default=1)
     args = parser.parse_args()
     transform = build_transform(args, is_train=True)
-    root = KYOTO_PATH
+    root = VISNIR_PATH
     # split = "roses23"
-    # dataset = VisNirDataset(root, image_size=[224, 224], transform=transform)
+    dataset = VisNirDataset(root, image_size=[224, 224], transform=transform)
     split = "train"
-    dataset = MultimodalMaterialDataset(root, split = split, image_size=[224, 224], transform=transform)
+    # dataset = MultimodalMaterialDataset(root, split = split, image_size=[224, 224], transform=transform)
 
-    # TEST_SIZE = 0.2
-    # SEED = 42
-    #
-    # # generate indices: instead of the actual data we pass in integers instead
-    # train_indices, test_indices = train_test_split(
-    #     range(len(dataset)),
-    #     test_size=TEST_SIZE,
-    #     random_state=SEED
-    # )
-    #
-    # # generate subset based on indices
-    # dataset = Subset(dataset, train_indices)
+    TEST_SIZE = 0.2
+    SEED = 42
+
+    # generate indices: instead of the actual data we pass in integers instead
+    train_indices, test_indices = train_test_split(
+        range(len(dataset)),
+        test_size=TEST_SIZE,
+        random_state=SEED
+    )
+
+    # generate subset based on indices
+    dataset = Subset(dataset, train_indices)
 
     from utils import print_tensor
 
     for sample in dataset:
 
-        for j in range(len(sample[0][0])):
-            print_tensor(sample[0][0][j])
-            print_tensor(sample[0][1][j])
+        # for j in range(len(sample[0][0])):
+            # print_tensor(sample[0][0][j])
+            # print_tensor(sample[0][1][j])
+        for j in range(len(sample[0])):
+            print_tensor(sample[0][j])

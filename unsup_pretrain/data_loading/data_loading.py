@@ -9,7 +9,7 @@ from PIL import ImageOps
 from torchvision import transforms
 from torchvision.datasets import Cityscapes
 
-from transforms_custom import RandomFlipWithReturn, RandomSizeCropWithCoord
+# from transforms_custom import RandomFlipWithReturn, RandomSizeCropWithCoord
 
 
 class GaussianBlur(object):

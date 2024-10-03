@@ -1,5 +1,6 @@
 import click
 import os
+import sys
 import re
 from os.path import join, dirname, abspath
 import torch
@@ -13,6 +14,8 @@ from models.ULES_DB import Ules as ULES_DB
 from pytorch_lightning.callbacks import Callback
 from pytorch_lightning.callbacks import RichProgressBar
 from pytorch_lightning.callbacks.progress.rich_progress import RichProgressBarTheme
+
+from unsup_pretrain.vicregl import optimizers
 
 
 @click.command()
@@ -58,15 +61,15 @@ def main(config, weights, checkpoint, data_ratio, gpus, head_only, rgb_only_ft, 
     torch.manual_seed(cfg['experiment']['seed'])
 
     # use the comment block below if you don't plan on using command line
-    weights = "yesb"
+    # weights = "single"
     dataset_name = "VisNir"
     # data_ratio = 100
-    if weights == "yes":
+    if weights == "single":
         # weights = 'unsup_pretrain/checkpoints/kyoto_material_seg/pixpro_kyoto_material_seg_db_final.ckpt'
-        weights = '/home/matt/PycharmProjects/VicREGL/experiments/model_resnet50_visnir_sb.pth'
+        weights = '/home/matt/PycharmProjects/ULES/unsup_pretrain/vicregl/experiments/resnet50_visnir_sb_comp.pth'
         print("loading weights from {}".format(weights))
-    elif weights == "yesb":
-        weights = "/home/matt/PycharmProjects/VicREGL/experiments/model_resnet50_visnir_db_v2.pth"
+    elif weights == "double":
+        weights = "/home/matt/PycharmProjects/ULES/unsup_pretrain/vicregl/experiments/resnet50_visnir_db_comp.pth"
         print("loading weights from {}".format(weights))
 
 
@@ -87,6 +90,7 @@ def main(config, weights, checkpoint, data_ratio, gpus, head_only, rgb_only_ft, 
     data = StatDataModule(cfg, dataset_name, data_ratio, image_size=image_size, mean=mean, std=std)
     model = ULES_DB(cfg, dataset_name, rgb_only_ft, double_backbone, head_only, mean, std, input_size=image_size, unfreeze_epoch=200)
 
+    sys.path.append("/home/matt/PycharmProjects/ULES/unsup_pretrain/vicregl")
     if weights:
         checkpoint = torch.load(weights)
 
@@ -235,7 +239,7 @@ def main(config, weights, checkpoint, data_ratio, gpus, head_only, rgb_only_ft, 
                 version_name = "sb_ft_range_"
         if not head_only:
             version_name = "full_" + version_name
-        extra = "VICREGL_v3_"
+        extra = "trial_"
         if weights:
             if "l2" in weights:
                 extra += "l2_"
@@ -270,7 +274,7 @@ def main(config, weights, checkpoint, data_ratio, gpus, head_only, rgb_only_ft, 
     print("The current experiment is being saved in%s" % exp_name)
 
     # Setup trainer
-    checkpoint_callback = ModelCheckpoint(dirpath="checkpoints/",
+    checkpoint_callback = ModelCheckpoint(dirpath="checkpoints/%s/" % dataset_snake,
                                           filename="{epoch}-%s" % version_name,
                                           monitor="sem_loss")
 

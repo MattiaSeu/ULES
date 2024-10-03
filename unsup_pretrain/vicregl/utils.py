@@ -45,7 +45,7 @@ def checkpoint(args, epoch, step, model, optimizer, name=""):
     state = dict(
         epoch=epoch, model=model.state_dict(), optimizer=optimizer.state_dict()
     )
-    save_name = f"model_{name}.pth" if len(name) > 0 else "model.pth"
+    save_name = f"{name}.pth" if len(name) > 0 else "model.pth"
     torch.save(state, args.exp_dir / save_name)
 
 
